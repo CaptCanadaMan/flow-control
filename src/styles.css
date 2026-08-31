@@ -108,6 +108,82 @@ section + section {
   margin-top: 1rem;
 }
 
+.operating-canvas {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(17rem, 0.42fr);
+  gap: clamp(1rem, 2.5vw, 2rem);
+  padding: clamp(0.8rem, 2vw, 1.25rem);
+}
+
+.radar {
+  display: block;
+  width: min(100%, 46rem);
+  aspect-ratio: 1;
+  justify-self: center;
+  border: 1px solid #31584e;
+  border-radius: 0.65rem;
+  background:
+    radial-gradient(circle, rgb(24 75 63 / 36%), transparent 65%),
+    #06110f;
+}
+
+.radar-boundary,
+.radar-ring {
+  fill: none;
+  stroke: #31584e;
+  stroke-width: 0.3;
+}
+
+.radar-ring {
+  stroke: #1e4139;
+  stroke-dasharray: 1.2 1.2;
+}
+
+.runway {
+  stroke: #a8c7bb;
+  stroke-width: 0.8;
+  stroke-linecap: round;
+}
+
+.aircraft circle {
+  fill: #81f0c1;
+}
+
+.aircraft {
+  cursor: pointer;
+}
+
+.aircraft:focus {
+  outline: none;
+}
+
+.aircraft:focus-visible circle {
+  stroke: #fff1c9;
+  stroke-width: 0.65;
+}
+
+.aircraft text {
+  fill: #c9e6da;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 3px;
+  font-weight: 650;
+}
+
+.aircraft.selected circle {
+  fill: #f4cf7a;
+  stroke: #fff1c9;
+  stroke-width: 0.45;
+}
+
+.operational-panel {
+  min-width: 0;
+}
+
+.operational-panel section {
+  box-shadow: none;
+}
+
 code {
   display: block;
   overflow-x: auto;
@@ -163,5 +239,15 @@ footer {
 
   h1 {
     font-size: clamp(2.8rem, 15vw, 5rem);
+  }
+}
+
+@media (max-aspect-ratio: 1 / 1) {
+  .operating-canvas {
+    grid-template-columns: 1fr;
+  }
+
+  .radar {
+    width: min(100%, 38rem);
   }
 }

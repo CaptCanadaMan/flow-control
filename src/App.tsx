@@ -1,4 +1,4 @@
-import type { OperatingPosture } from "./application";
+import type { OperatingPosture, TowerSnapshot } from "./application";
 
 const POSTURE_LABELS: Record<OperatingPosture, string> = {
   observe: "Observe",
@@ -14,6 +14,9 @@ export type ConnectionHealth =
 
 export function App({
   webMcpAvailable,
+  snapshot,
+  selectedAircraftId,
+  onSelectAircraft,
   shiftStatus = "armed",
   stateVersion = 0,
   operatingPosture = "observe",
@@ -26,6 +29,9 @@ export function App({
   onConfirmTakeTheSector,
 }: {
   webMcpAvailable: boolean;
+  snapshot?: Pick<TowerSnapshot, "aircraft" | "airport">;
+  selectedAircraftId?: string;
+  onSelectAircraft?: (aircraftId: string) => void;
   shiftStatus?: "armed" | "active";
   stateVersion?: number;
   operatingPosture?: OperatingPosture;
@@ -50,6 +56,10 @@ export function App({
     );
   }
 
+  const selectedAircraft = snapshot?.aircraft.find(
+    (aircraft) => aircraft.id === selectedAircraftId,
+  );
+
   return (
     <main>
       <header>
@@ -60,6 +70,85 @@ export function App({
           retains authority, exceptional judgment, and an inspectable record.
         </p>
       </header>
+
+      {snapshot ? (
+        <section className="operating-canvas" aria-label="Operating canvas">
+          <svg
+            className="radar"
+            viewBox="0 0 100 100"
+            role="img"
+            aria-label={`${snapshot.airport.name} radar scope`}
+          >
+            <circle className="radar-boundary" cx="50" cy="50" r="40" />
+            <circle className="radar-ring" cx="50" cy="50" r="20" />
+            {snapshot.airport.runways.map((runway) => {
+              const length = runway.role === "primary" ? 34 : 20;
+              const radians = (runway.headingDegrees * Math.PI) / 180;
+              const deltaX = Math.sin(radians) * length;
+              const deltaY = -Math.cos(radians) * length;
+
+              return (
+                <line
+                  className="runway"
+                  key={runway.id}
+                  x1={50 - deltaX}
+                  y1={50 - deltaY}
+                  x2={50 + deltaX}
+                  y2={50 + deltaY}
+                />
+              );
+            })}
+            {snapshot.aircraft.map((aircraft) => {
+              const x = 50 + aircraft.position.eastNauticalMiles * 5;
+              const y = 50 - aircraft.position.northNauticalMiles * 5;
+              const isSelected = aircraft.id === selectedAircraftId;
+
+              return (
+                <g
+                  className={isSelected ? "aircraft selected" : "aircraft"}
+                  key={aircraft.id}
+                  aria-label={`${aircraft.callsign}, ${aircraft.flightPhase}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectAircraft?.(aircraft.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectAircraft?.(aircraft.id);
+                    }
+                  }}
+                >
+                  <circle cx={x} cy={y} r="1.65" />
+                  <text x={x + 2.6} y={y - 1.8}>
+                    {aircraft.callsign}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+
+          <aside className="operational-panel" aria-label="Operational panel">
+            <section aria-labelledby="situation-heading">
+              <p>Situation</p>
+              <h2 id="situation-heading">{snapshot.aircraft.length} aircraft tracked</h2>
+              <p>{snapshot.airport.name} local control volume.</p>
+            </section>
+            <section aria-labelledby="selected-aircraft-heading">
+              <p>Selected Aircraft</p>
+              <h2 id="selected-aircraft-heading">
+                {selectedAircraft?.callsign ?? "No aircraft selected"}
+              </h2>
+              {selectedAircraft ? (
+                <p>
+                  {selectedAircraft.altitudeFeet.toLocaleString()} ft · {selectedAircraft.speedKnots} kt · {selectedAircraft.flightPhase}
+                </p>
+              ) : (
+                <p>Select an aircraft on the radar to inspect its operational context.</p>
+              )}
+            </section>
+          </aside>
+        </section>
+      ) : null}
 
       {shiftStatus === "active" && connectionHealth !== "healthy" ? (
         connectionHealth === "warning" ? (

@@ -38,6 +38,9 @@ function FlowControlPage() {
       ? (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
       : undefined,
   );
+  const [selectedAircraftId, setSelectedAircraftId] = useState<string | undefined>(
+    () => snapshot?.aircraft[0]?.id,
+  );
   const [connectionHealth, setConnectionHealth] =
     useState<ConnectionHealth>("healthy");
 
@@ -64,6 +67,9 @@ function FlowControlPage() {
   return (
     <App
       webMcpAvailable={Boolean(modelContext)}
+      snapshot={snapshot}
+      selectedAircraftId={selectedAircraftId}
+      onSelectAircraft={setSelectedAircraftId}
       shiftStatus={snapshot?.shiftStatus}
       stateVersion={snapshot?.stateVersion}
       operatingPosture={snapshot?.operatingPosture}

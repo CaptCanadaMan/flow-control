@@ -2,8 +2,44 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { App } from "./App";
+import { createFlowControlApplication, type TowerSnapshot } from "./application";
 
 describe("WebMCP preflight", () => {
+  it("renders a selected aircraft from the authoritative snapshot in the radar and its contextual panel", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-3-operating-canvas",
+      operatingPosture: "observe",
+    });
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    const page = renderToStaticMarkup(
+      <App
+        webMcpAvailable
+        snapshot={snapshot}
+        selectedAircraftId="fc-202"
+      />,
+    );
+
+    expect(page).toContain('aria-label="Flow Field radar scope"');
+    expect(page).toContain("FLOW 202");
+    expect(page).toContain("Selected Aircraft");
+    expect(page).toContain("3,000 ft");
+    expect(page).toContain("180 kt");
+  });
+
+  it("exposes every aircraft as a keyboard-reachable radar selection target", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-3-selection-targets",
+      operatingPosture: "observe",
+    });
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    const page = renderToStaticMarkup(
+      <App webMcpAvailable snapshot={snapshot} />,
+    );
+
+    expect(page.match(/role="button"/g)).toHaveLength(snapshot.aircraft.length);
+    expect(page.match(/tabindex="0"/g)).toHaveLength(snapshot.aircraft.length);
+  });
+
   it("blocks the Shift and explains how to reopen an unsupported browser", () => {
     const page = renderToStaticMarkup(<App webMcpAvailable={false} />);
 
