@@ -206,6 +206,14 @@ type ActionClassification =
   | "elevated"
   | "exceptional-recovery";
 
+type ClearancePlan = {
+  reference: string;
+  runwayClearances: CandidateRunwayClearance[];
+  classification: ActionClassification;
+  evaluatedStateVersion: number;
+  expiresAtSimulationTimeMs: number;
+};
+
 type TacticalInstruction = {
   headingDegrees?: number;
   altitudeFeet?: number;
@@ -491,6 +499,7 @@ type ApplicationState = {
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
+  stagedClearancePlan?: ClearancePlan;
   shiftStatus: "armed" | "active";
   simulationTimeMs: number;
   stateVersion: number;
@@ -512,6 +521,7 @@ export type TowerSnapshot = Pick<
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
+  stagedClearancePlan?: ClearancePlan;
 };
 
 type Query =
@@ -589,6 +599,7 @@ type StageClearancePlanCommand = {
   type: "stage-clearance-plan";
   actor: "tower-agent";
   planReference: string;
+  runwayClearances?: CandidateRunwayClearance[];
   expectedStateVersion: number;
 };
 
@@ -678,6 +689,8 @@ const WAKE_SPACING_AFTER_MS = {
   medium: 10_000,
   heavy: 20_000,
 } as const;
+
+const PLAN_EXPIRY_WINDOW_MS = 30_000;
 
 function createSeededRandom(scenarioSeed: string) {
   let state = 2_166_136_261;
@@ -1186,6 +1199,7 @@ export function createFlowControlApplication(options: {
       pendingOperatingPosture: state.pendingOperatingPosture,
       capabilitySynchronization: state.capabilitySynchronization,
       stagedClearancePlanReference: state.stagedClearancePlanReference,
+      stagedClearancePlan: structuredClone(state.stagedClearancePlan),
     };
   }
 
@@ -1537,7 +1551,29 @@ export function createFlowControlApplication(options: {
       }
 
       if (command.type === "stage-clearance-plan") {
+        const runwayClearances = command.runwayClearances ?? [];
+        const evaluation = evaluateRunwayClearanceSet(
+          state,
+          runwayClearances,
+        );
+        if (!evaluation.valid) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `Clearance Plan ${command.planReference} cannot be staged from an invalid clearance set.`,
+            nextAction: evaluation.nextAction,
+          };
+        }
+
         state.stagedClearancePlanReference = command.planReference;
+        state.stagedClearancePlan = {
+          reference: command.planReference,
+          runwayClearances: structuredClone(runwayClearances),
+          classification: evaluation.classification,
+          evaluatedStateVersion: state.stateVersion,
+          expiresAtSimulationTimeMs:
+            state.simulationTimeMs + PLAN_EXPIRY_WINDOW_MS,
+        };
         const stateVersionBefore = state.stateVersion;
         state.stateVersion += 1;
         state.operationalReceipts.push({

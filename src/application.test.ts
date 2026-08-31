@@ -260,6 +260,7 @@ describe("Shift lifecycle", () => {
         pendingOperatingPosture: undefined,
         capabilitySynchronization: undefined,
         stagedClearancePlanReference: undefined,
+        stagedClearancePlan: undefined,
         simulationTimeMs: 300,
         stateVersion: 1,
         weather: {
@@ -1029,6 +1030,55 @@ describe("Shift lifecycle", () => {
       rationale:
         "The Supervising Controller withheld runway Clearance dispatch from the Tower Agent.",
       nextAction: "wait-for-tower-event",
+    });
+  });
+
+  it("stages an evaluated Clearance Plan with its State Version and Plan Expiry", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-clearance-plan",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.command({
+        type: "stage-clearance-plan",
+        actor: "tower-agent",
+        planReference: "departure-101",
+        runwayClearances: [
+          {
+            aircraftId: "fc-101",
+            clearance: {
+              kind: "clear-for-takeoff",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+        expectedStateVersion: 1,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 2 });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlan: {
+        reference: "departure-101",
+        runwayClearances: [
+          {
+            aircraftId: "fc-101",
+            clearance: {
+              kind: "clear-for-takeoff",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+        classification: "routine",
+        evaluatedStateVersion: 1,
+        expiresAtSimulationTimeMs: 30_000,
+      },
     });
   });
 
