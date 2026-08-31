@@ -102,6 +102,81 @@ const FLOW_FIELD_GEOMETRY = {
 
 type AirportGeometry = typeof FLOW_FIELD_GEOMETRY;
 
+const AIRCRAFT_CAPABILITY_PROFILES = [
+  {
+    id: "cessna-172",
+    displayName: "Cessna 172",
+    wakeCategory: "light",
+    approachSpeedKnots: 65,
+    cruiseSpeedKnots: 110,
+    climbRateFeetPerMinute: 700,
+    minimumRunway: { lengthFeet: 2_500, widthFeet: 75 },
+    manoeuvring: {
+      circuitEligible: true,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "king-air-350",
+    displayName: "King Air 350",
+    wakeCategory: "medium",
+    approachSpeedKnots: 105,
+    cruiseSpeedKnots: 270,
+    climbRateFeetPerMinute: 1_800,
+    minimumRunway: { lengthFeet: 4_000, widthFeet: 100 },
+    manoeuvring: {
+      circuitEligible: true,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "atr-72-600",
+    displayName: "ATR 72-600",
+    wakeCategory: "medium",
+    approachSpeedKnots: 120,
+    cruiseSpeedKnots: 275,
+    climbRateFeetPerMinute: 1_500,
+    minimumRunway: { lengthFeet: 4_500, widthFeet: 100 },
+    manoeuvring: {
+      circuitEligible: false,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "boeing-737-8",
+    displayName: "Boeing 737-8",
+    wakeCategory: "medium",
+    approachSpeedKnots: 140,
+    cruiseSpeedKnots: 450,
+    climbRateFeetPerMinute: 2_500,
+    minimumRunway: { lengthFeet: 6_500, widthFeet: 150 },
+    manoeuvring: {
+      circuitEligible: false,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "airbus-a330-900",
+    displayName: "Airbus A330-900",
+    wakeCategory: "heavy",
+    approachSpeedKnots: 145,
+    cruiseSpeedKnots: 470,
+    climbRateFeetPerMinute: 1_800,
+    minimumRunway: { lengthFeet: 9_500, widthFeet: 150 },
+    manoeuvring: {
+      circuitEligible: false,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+] as const;
+
+type AircraftCapabilityProfiles = typeof AIRCRAFT_CAPABILITY_PROFILES;
+
 type Capability =
   | "begin_tower_shift"
   | "get_tower_snapshot"
@@ -132,6 +207,7 @@ type ApplicationState = {
   scenarioSeed: string;
   weather: StaticVfrWeather;
   airport: AirportGeometry;
+  aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   operatingPosture: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
@@ -149,6 +225,7 @@ export type TowerSnapshot = Pick<
   simulationTimeMs: number;
   weather: StaticVfrWeather;
   airport: AirportGeometry;
+  aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -307,6 +384,7 @@ function generateScenario(scenarioSeed: string) {
   return {
     weather: selectStaticVfrWeather(random),
     airport: structuredClone(FLOW_FIELD_GEOMETRY),
+    aircraftCapabilityProfiles: structuredClone(AIRCRAFT_CAPABILITY_PROFILES),
   };
 }
 
@@ -377,6 +455,7 @@ export function createFlowControlApplication(options: {
       scenarioSeed: state.scenarioSeed,
       weather: { ...state.weather },
       airport: structuredClone(state.airport),
+      aircraftCapabilityProfiles: structuredClone(state.aircraftCapabilityProfiles),
       operatingPosture: state.operatingPosture,
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,

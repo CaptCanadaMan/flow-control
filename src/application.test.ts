@@ -90,6 +90,79 @@ const EXPECTED_AIRPORT_GEOMETRY = {
   ],
 } as const;
 
+const EXPECTED_AIRCRAFT_CAPABILITY_PROFILES = [
+  {
+    id: "cessna-172",
+    displayName: "Cessna 172",
+    wakeCategory: "light",
+    approachSpeedKnots: 65,
+    cruiseSpeedKnots: 110,
+    climbRateFeetPerMinute: 700,
+    minimumRunway: { lengthFeet: 2_500, widthFeet: 75 },
+    manoeuvring: {
+      circuitEligible: true,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "king-air-350",
+    displayName: "King Air 350",
+    wakeCategory: "medium",
+    approachSpeedKnots: 105,
+    cruiseSpeedKnots: 270,
+    climbRateFeetPerMinute: 1_800,
+    minimumRunway: { lengthFeet: 4_000, widthFeet: 100 },
+    manoeuvring: {
+      circuitEligible: true,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "atr-72-600",
+    displayName: "ATR 72-600",
+    wakeCategory: "medium",
+    approachSpeedKnots: 120,
+    cruiseSpeedKnots: 275,
+    climbRateFeetPerMinute: 1_500,
+    minimumRunway: { lengthFeet: 4_500, widthFeet: 100 },
+    manoeuvring: {
+      circuitEligible: false,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "boeing-737-8",
+    displayName: "Boeing 737-8",
+    wakeCategory: "medium",
+    approachSpeedKnots: 140,
+    cruiseSpeedKnots: 450,
+    climbRateFeetPerMinute: 2_500,
+    minimumRunway: { lengthFeet: 6_500, widthFeet: 150 },
+    manoeuvring: {
+      circuitEligible: false,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+  {
+    id: "airbus-a330-900",
+    displayName: "Airbus A330-900",
+    wakeCategory: "heavy",
+    approachSpeedKnots: 145,
+    cruiseSpeedKnots: 470,
+    climbRateFeetPerMinute: 1_800,
+    minimumRunway: { lengthFeet: 9_500, widthFeet: 150 },
+    manoeuvring: {
+      circuitEligible: false,
+      localHoldEligible: true,
+      threeSixtyEligible: true,
+    },
+  },
+] as const;
+
 describe("Shift lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -193,6 +266,7 @@ describe("Shift lifecycle", () => {
           ceilingFeet: 6_000,
         },
         airport: EXPECTED_AIRPORT_GEOMETRY,
+        aircraftCapabilityProfiles: EXPECTED_AIRCRAFT_CAPABILITY_PROFILES,
       },
       receipts: [
         {
@@ -244,6 +318,17 @@ describe("Shift lifecycle", () => {
 
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
       airport: EXPECTED_AIRPORT_GEOMETRY,
+    });
+  });
+
+  it("exposes illustrative capability profiles for every supported aircraft type", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-1-aircraft-capabilities",
+      operatingPosture: "observe",
+    });
+
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      aircraftCapabilityProfiles: EXPECTED_AIRCRAFT_CAPABILITY_PROFILES,
     });
   });
 
