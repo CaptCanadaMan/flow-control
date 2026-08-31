@@ -1,0 +1,137 @@
+:root {
+  color: #dce9e3;
+  background: #07100f;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 70% 15%, rgb(31 92 77 / 18%), transparent 32rem),
+    linear-gradient(145deg, #07100f 0%, #0a1715 52%, #07100f 100%);
+}
+
+main {
+  display: grid;
+  width: min(72rem, calc(100% - 2rem));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: clamp(2rem, 7vw, 6rem) 0 2rem;
+  grid-template-columns: minmax(0, 1.35fr) minmax(18rem, 0.65fr);
+  gap: clamp(1.5rem, 4vw, 4rem);
+  align-content: center;
+}
+
+header {
+  align-self: center;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  max-width: 13ch;
+  margin-bottom: 1.5rem;
+  color: #f2f7f4;
+  font-size: clamp(2.8rem, 7vw, 6.8rem);
+  font-weight: 570;
+  letter-spacing: -0.065em;
+  line-height: 0.93;
+}
+
+h2 {
+  color: #f2f7f4;
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+p {
+  max-width: 48rem;
+  color: #9eb5ac;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+header > p:first-child,
+section > p:first-child {
+  color: #6ee7b7;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+section {
+  padding: 1.4rem;
+  border: 1px solid #234039;
+  border-radius: 0.85rem;
+  background: rgb(9 26 22 / 82%);
+  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 20%);
+}
+
+section + section {
+  margin-top: 1rem;
+}
+
+code {
+  display: block;
+  overflow-x: auto;
+  padding: 0.9rem 1rem;
+  border: 1px solid #2a4b43;
+  border-radius: 0.5rem;
+  color: #a7f3d0;
+  background: #050c0b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.8rem;
+}
+
+button {
+  padding: 0.72rem 1rem;
+  border: 1px solid #4b7569;
+  border-radius: 0.5rem;
+  color: #d8f7eb;
+  background: #16352e;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button:hover,
+button:focus-visible {
+  border-color: #6ee7b7;
+  outline: none;
+  background: #1d483e;
+}
+
+footer {
+  grid-column: 1 / -1;
+  padding-top: 1.5rem;
+  border-top: 1px solid #1a2d29;
+  color: #607a70;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 760px) {
+  main {
+    grid-template-columns: 1fr;
+    align-content: start;
+  }
+
+  h1 {
+    font-size: clamp(2.8rem, 15vw, 5rem);
+  }
+}
