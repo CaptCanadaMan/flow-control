@@ -271,6 +271,7 @@ describe("Shift lifecycle", () => {
         airport: EXPECTED_AIRPORT_GEOMETRY,
         aircraftCapabilityProfiles: EXPECTED_AIRCRAFT_CAPABILITY_PROFILES,
         aircraft: expect.any(Array),
+        runwayResources: expect.any(Object),
       },
       receipts: [
         {
@@ -477,6 +478,87 @@ describe("Shift lifecycle", () => {
           (receipt) => receipt.action === "aircraft-state-transition",
         ),
     ).toHaveLength(12);
+  });
+
+  it("models runway and intersection occupancy as shared timed resources", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-1-runway-resources",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .runwayResources,
+    ).toEqual({ runwayOccupancy: [], intersectionOccupancy: [] });
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 100,
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .runwayResources,
+    ).toEqual({
+      runwayOccupancy: [
+        {
+          runwayId: "09-27",
+          aircraftId: "fc-101",
+          callsign: "FLOW 101",
+          operation: "departure",
+          clearsAtSimulationTimeMs: 30_000,
+        },
+      ],
+      intersectionOccupancy: [
+        {
+          intersectionId: "primary-crosswind",
+          aircraftIds: ["fc-101"],
+          runwayIds: ["09-27"],
+        },
+      ],
+    });
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 200,
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .runwayResources,
+    ).toEqual({
+      runwayOccupancy: [
+        {
+          runwayId: "04-22",
+          aircraftId: "fc-202",
+          callsign: "FLOW 202",
+          operation: "arrival",
+          clearsAtSimulationTimeMs: 40_000,
+        },
+      ],
+      intersectionOccupancy: [
+        {
+          intersectionId: "primary-crosswind",
+          aircraftIds: ["fc-202"],
+          runwayIds: ["04-22"],
+        },
+      ],
+    });
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 1_800,
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .runwayResources,
+    ).toEqual({ runwayOccupancy: [], intersectionOccupancy: [] });
   });
 
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {

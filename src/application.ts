@@ -208,15 +208,27 @@ type AircraftLifecycle = {
   completeAtMs: number;
   operatingFlightPhase: Extract<AircraftFlightPhase, "approach" | "circuit" | "departure">;
   exit: "departed" | "landed";
+  runwayUse?: {
+    runwayId: "09-27" | "04-22";
+    operation: "departure" | "arrival";
+    beginsAtMs: number;
+    clearsAtMs: number;
+  };
   aircraft: Aircraft;
 };
 
 const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
   {
     operatingAtMs: 10_000,
-    completeAtMs: 60_000,
+    completeAtMs: 30_000,
     operatingFlightPhase: "departure",
     exit: "departed",
+    runwayUse: {
+      runwayId: "09-27",
+      operation: "departure",
+      beginsAtMs: 10_000,
+      clearsAtMs: 30_000,
+    },
     aircraft: {
       id: "fc-101",
       callsign: "FLOW 101",
@@ -233,9 +245,15 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
   },
   {
     operatingAtMs: 20_000,
-    completeAtMs: 90_000,
+    completeAtMs: 40_000,
     operatingFlightPhase: "approach",
     exit: "landed",
+    runwayUse: {
+      runwayId: "04-22",
+      operation: "arrival",
+      beginsAtMs: 30_000,
+      clearsAtMs: 40_000,
+    },
     aircraft: {
       id: "fc-202",
       callsign: "FLOW 202",
@@ -252,9 +270,15 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
   },
   {
     operatingAtMs: 30_000,
-    completeAtMs: 120_000,
+    completeAtMs: 160_000,
     operatingFlightPhase: "approach",
     exit: "landed",
+    runwayUse: {
+      runwayId: "04-22",
+      operation: "arrival",
+      beginsAtMs: 150_000,
+      clearsAtMs: 160_000,
+    },
     aircraft: {
       id: "fc-303",
       callsign: "FLOW 303",
@@ -274,6 +298,12 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     completeAtMs: 150_000,
     operatingFlightPhase: "departure",
     exit: "departed",
+    runwayUse: {
+      runwayId: "09-27",
+      operation: "departure",
+      beginsAtMs: 40_000,
+      clearsAtMs: 150_000,
+    },
     aircraft: {
       id: "fc-404",
       callsign: "FLOW 404",
@@ -290,9 +320,15 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
   },
   {
     operatingAtMs: 50_000,
-    completeAtMs: 180_000,
+    completeAtMs: 190_000,
     operatingFlightPhase: "approach",
     exit: "landed",
+    runwayUse: {
+      runwayId: "09-27",
+      operation: "arrival",
+      beginsAtMs: 180_000,
+      clearsAtMs: 190_000,
+    },
     aircraft: {
       id: "fc-505",
       callsign: "FLOW 505",
@@ -328,6 +364,21 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
   },
 ];
 
+type RunwayResources = {
+  runwayOccupancy: Array<{
+    runwayId: "09-27" | "04-22";
+    aircraftId: string;
+    callsign: string;
+    operation: "departure" | "arrival";
+    clearsAtSimulationTimeMs: number;
+  }>;
+  intersectionOccupancy: Array<{
+    intersectionId: string;
+    aircraftIds: string[];
+    runwayIds: Array<"09-27" | "04-22">;
+  }>;
+};
+
 type Capability =
   | "begin_tower_shift"
   | "get_tower_snapshot"
@@ -349,6 +400,7 @@ type OperationalReceipt = {
   action:
     | "shift-began"
     | "aircraft-state-transition"
+    | "runway-resources-transition"
     | "operating-posture-reduced"
     | "operating-posture-increase-requested"
     | "operating-posture-increase-confirmed"
@@ -365,6 +417,7 @@ type ApplicationState = {
   airport: AirportGeometry;
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   aircraft: Aircraft[];
+  runwayResources: RunwayResources;
   operatingPosture: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
@@ -384,6 +437,7 @@ export type TowerSnapshot = Pick<
   airport: AirportGeometry;
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   aircraft: Aircraft[];
+  runwayResources: RunwayResources;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -547,7 +601,64 @@ function generateScenario(scenarioSeed: string) {
     aircraft: structuredClone(
       INITIAL_AIRCRAFT_LIFECYCLES.map(({ aircraft }) => aircraft),
     ),
+    runwayResources: { runwayOccupancy: [], intersectionOccupancy: [] },
   };
+}
+
+function runwayResourcesAt(
+  airport: AirportGeometry,
+  simulationTimeMs: number,
+): RunwayResources {
+  const runwayOccupancy = INITIAL_AIRCRAFT_LIFECYCLES.flatMap((lifecycle) => {
+    const runwayUse = lifecycle.runwayUse;
+    if (
+      !runwayUse ||
+      simulationTimeMs < runwayUse.beginsAtMs ||
+      simulationTimeMs >= runwayUse.clearsAtMs
+    ) {
+      return [];
+    }
+    return [
+      {
+        runwayId: runwayUse.runwayId,
+        aircraftId: lifecycle.aircraft.id,
+        callsign: lifecycle.aircraft.callsign,
+        operation: runwayUse.operation,
+        clearsAtSimulationTimeMs: runwayUse.clearsAtMs,
+      },
+    ];
+  });
+  const intersectionOccupancy = airport.intersections.flatMap(
+    (intersection) => {
+      const occupants = runwayOccupancy.filter((occupancy) =>
+        intersection.runwayIds.includes(occupancy.runwayId),
+      );
+      return occupants.length === 0
+        ? []
+        : [
+            {
+              intersectionId: intersection.id,
+              aircraftIds: occupants.map(({ aircraftId }) => aircraftId),
+              runwayIds: occupants.map(({ runwayId }) => runwayId),
+            },
+          ];
+    },
+  );
+  return { runwayOccupancy, intersectionOccupancy };
+}
+
+function advanceRunwayResources(state: ApplicationState) {
+  const nextResources = runwayResourcesAt(
+    state.airport,
+    state.simulationTimeMs,
+  );
+  if (
+    JSON.stringify(nextResources) === JSON.stringify(state.runwayResources)
+  ) {
+    return false;
+  }
+  state.runwayResources = nextResources;
+  return true;
 }
 
 function advanceAircraftState(state: ApplicationState) {
@@ -656,6 +767,7 @@ export function createFlowControlApplication(options: {
       airport: structuredClone(state.airport),
       aircraftCapabilityProfiles: structuredClone(state.aircraftCapabilityProfiles),
       aircraft: structuredClone(state.aircraft),
+      runwayResources: structuredClone(state.runwayResources),
       operatingPosture: state.operatingPosture,
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,
@@ -747,6 +859,17 @@ export function createFlowControlApplication(options: {
             state.operationalReceipts.push({
               actor: command.actor,
               action: "aircraft-state-transition",
+              simulationTimeMs: state.simulationTimeMs,
+              stateVersionBefore,
+              stateVersionAfter: state.stateVersion,
+            });
+          }
+          if (advanceRunwayResources(state)) {
+            const stateVersionBefore = state.stateVersion;
+            state.stateVersion += 1;
+            state.operationalReceipts.push({
+              actor: command.actor,
+              action: "runway-resources-transition",
               simulationTimeMs: state.simulationTimeMs,
               stateVersionBefore,
               stateVersionAfter: state.stateVersion,
