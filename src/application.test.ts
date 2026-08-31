@@ -1498,6 +1498,76 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("edits a Clearance Plan Tactical Instruction and revalidates the selected remainder", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-plan-tactical-edit",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "arrival-vector",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      tacticalInstructions: [
+        {
+          aircraftId: "fc-202",
+          instruction: {
+            headingDegrees: 100,
+            altitudeFeet: 3000,
+            speedKnots: 170,
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+
+    expect(
+      application.command({
+        type: "edit-clearance-plan-tactical-instruction",
+        actor: "supervising-controller",
+        memberId: "arrival-vector:tactical-instruction:1",
+        changes: { headingDegrees: 120, altitudeFeet: 3500 },
+        expectedStateVersion: 2,
+      }),
+    ).toEqual({
+      status: "success",
+      stateVersion: 3,
+      summary:
+        "Clearance Plan Tactical Instruction arrival-vector:tactical-instruction:1 edited; the selected subset remains valid.",
+      nextAction: "await-plan-review",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlan: {
+        tacticalMembers: [
+          {
+            id: "arrival-vector:tactical-instruction:1",
+            aircraftId: "fc-202",
+            selected: true,
+            instruction: {
+              headingDegrees: 120,
+              altitudeFeet: 3500,
+              speedKnots: 170,
+            },
+          },
+        ],
+      },
+    });
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",

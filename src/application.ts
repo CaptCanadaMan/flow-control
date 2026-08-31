@@ -220,10 +220,24 @@ type ClearancePlanMember = {
   alternatives: ClearancePlanAlternative[];
 };
 
+type CandidateTacticalInstruction = {
+  aircraftId: string;
+  instruction: TacticalInstruction;
+};
+
+type TacticalPlanMember = {
+  id: string;
+  aircraftId: string;
+  instruction: TacticalInstruction;
+  selected: boolean;
+};
+
 type ClearancePlan = {
   reference: string;
   runwayClearances: CandidateRunwayClearance[];
   members: ClearancePlanMember[];
+  tacticalInstructions: CandidateTacticalInstruction[];
+  tacticalMembers: TacticalPlanMember[];
   classification: ActionClassification;
   evaluatedStateVersion: number;
   expiresAtSimulationTimeMs: number;
@@ -250,6 +264,18 @@ function clearancePlanMembers(
       ),
     };
   });
+}
+
+function tacticalPlanMembers(
+  reference: string,
+  tacticalInstructions: CandidateTacticalInstruction[],
+): TacticalPlanMember[] {
+  return tacticalInstructions.map((candidate, index) => ({
+    id: `${reference}:tactical-instruction:${index + 1}`,
+    aircraftId: candidate.aircraftId,
+    instruction: structuredClone(candidate.instruction),
+    selected: true,
+  }));
 }
 
 type TacticalInstruction = {
@@ -525,6 +551,7 @@ type OperationalReceipt = {
     | "clearance-plan-member-selection-updated"
     | "clearance-plan-dispatched"
     | "clearance-plan-alternative-selected"
+    | "clearance-plan-tactical-instruction-edited"
     | "recovery-plan-approved-and-dispatched";
   simulationTimeMs: number;
   stateVersionBefore: number;
@@ -649,6 +676,7 @@ type StageClearancePlanCommand = {
   actor: "tower-agent";
   planReference: string;
   runwayClearances?: CandidateRunwayClearance[];
+  tacticalInstructions?: CandidateTacticalInstruction[];
   expectedStateVersion: number;
 };
 
@@ -679,6 +707,17 @@ type SelectClearancePlanAlternativeCommand = {
   actor: "supervising-controller";
   memberId: string;
   alternativeId: string;
+  expectedStateVersion: number;
+};
+
+type EditClearancePlanTacticalInstructionCommand = {
+  type: "edit-clearance-plan-tactical-instruction";
+  actor: "supervising-controller";
+  memberId: string;
+  changes: Pick<
+    TacticalInstruction,
+    "headingDegrees" | "altitudeFeet" | "speedKnots"
+  >;
   expectedStateVersion: number;
 };
 
@@ -724,6 +763,7 @@ type Command =
   | SetClearancePlanMemberSelectionCommand
   | DispatchSelectedClearancePlanCommand
   | SelectClearancePlanAlternativeCommand
+  | EditClearancePlanTacticalInstructionCommand
   | ApproveRecoveryPlanCommand
   | IssueRunwayClearanceCommand
   | IssueTacticalInstructionCommand
@@ -867,6 +907,20 @@ function tacticalInstructionText(
       : `${instruction.orbitDirection} 360`,
   ].filter((part): part is string => part !== undefined);
   return parts.length === 0 ? undefined : `${callsign}, ${parts.join(", ")}.`;
+}
+
+function isValidPlanTacticalInstruction(instruction: TacticalInstruction) {
+  return (
+    tacticalInstructionText("Plan", instruction) !== undefined &&
+    (instruction.headingDegrees === undefined ||
+      (Number.isInteger(instruction.headingDegrees) &&
+        instruction.headingDegrees >= 1 &&
+        instruction.headingDegrees <= 360)) &&
+    (instruction.altitudeFeet === undefined ||
+      (Number.isInteger(instruction.altitudeFeet) && instruction.altitudeFeet > 0)) &&
+    (instruction.speedKnots === undefined ||
+      (Number.isInteger(instruction.speedKnots) && instruction.speedKnots > 0))
+  );
 }
 
 function appendTransmission(
@@ -1721,11 +1775,17 @@ export function createFlowControlApplication(options: {
 
       if (command.type === "stage-clearance-plan") {
         const runwayClearances = command.runwayClearances ?? [];
+        const tacticalInstructions = command.tacticalInstructions ?? [];
         const evaluation = evaluateRunwayClearanceSet(
           state,
           runwayClearances,
         );
-        if (!evaluation.valid) {
+        if (
+          !evaluation.valid ||
+          tacticalInstructions.some(
+            ({ instruction }) => !isValidPlanTacticalInstruction(instruction),
+          )
+        ) {
           return {
             status: "refusal" as const,
             stateVersion: state.stateVersion,
@@ -1741,6 +1801,11 @@ export function createFlowControlApplication(options: {
           members: clearancePlanMembers(
             command.planReference,
             runwayClearances,
+          ),
+          tacticalInstructions: structuredClone(tacticalInstructions),
+          tacticalMembers: tacticalPlanMembers(
+            command.planReference,
+            tacticalInstructions,
           ),
           classification: evaluation.classification,
           evaluatedStateVersion: state.stateVersion,
@@ -1915,6 +1980,118 @@ export function createFlowControlApplication(options: {
           status: "success" as const,
           stateVersion: state.stateVersion,
           summary: `Clearance Plan alternative ${command.alternativeId} selected; the selected subset remains valid.`,
+          nextAction: "await-plan-review" as const,
+        };
+      }
+
+      if (command.type === "edit-clearance-plan-tactical-instruction") {
+        const plan = state.stagedClearancePlan;
+        if (!plan) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "Clearance Plan Tactical Instruction editing requires an active Clearance Plan.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+        if (
+          command.changes.headingDegrees === undefined &&
+          command.changes.altitudeFeet === undefined &&
+          command.changes.speedKnots === undefined
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "Clearance Plan Tactical Instruction edits require heading, altitude, or speed.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+        const member = plan.tacticalMembers.find(
+          ({ id }) => id === command.memberId,
+        );
+        if (!member) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `Clearance Plan Tactical Instruction ${command.memberId} was not found.`,
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        const tacticalMembers = plan.tacticalMembers.map((candidate) =>
+          candidate.id === command.memberId
+            ? {
+                ...candidate,
+                instruction: {
+                  ...candidate.instruction,
+                  ...(command.changes.headingDegrees === undefined
+                    ? {}
+                    : { headingDegrees: command.changes.headingDegrees }),
+                  ...(command.changes.altitudeFeet === undefined
+                    ? {}
+                    : { altitudeFeet: command.changes.altitudeFeet }),
+                  ...(command.changes.speedKnots === undefined
+                    ? {}
+                    : { speedKnots: command.changes.speedKnots }),
+                },
+              }
+            : candidate,
+        );
+        const evaluation = evaluateRunwayClearanceSet(
+          state,
+          plan.members
+            .filter(({ selected }) => selected)
+            .map(({ aircraftId, clearance }) => ({ aircraftId, clearance })),
+        );
+        if (
+          !evaluation.valid ||
+          tacticalMembers
+            .filter(({ selected }) => selected)
+            .some(
+              ({ aircraftId, instruction }) =>
+                !state.aircraft.some(
+                  ({ id, flightPhase }) =>
+                    id === aircraftId && flightPhase !== "out-of-play",
+                ) || !isValidPlanTacticalInstruction(instruction),
+            )
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "The selected Clearance Plan subset is not valid after that Tactical Instruction edit.",
+            nextAction: evaluation.nextAction,
+          };
+        }
+
+        state.stagedClearancePlan = {
+          ...plan,
+          tacticalInstructions: tacticalMembers.map(({ aircraftId, instruction }) => ({
+            aircraftId,
+            instruction: structuredClone(instruction),
+          })),
+          tacticalMembers,
+          classification: evaluation.classification,
+          evaluatedStateVersion: state.stateVersion,
+        };
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "clearance-plan-tactical-instruction-edited",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `Clearance Plan Tactical Instruction ${command.memberId} edited; the selected subset remains valid.`,
           nextAction: "await-plan-review" as const,
         };
       }
@@ -2154,6 +2331,8 @@ export function createFlowControlApplication(options: {
             command.planReference,
             command.runwayClearances,
           ),
+          tacticalInstructions: [],
+          tacticalMembers: [],
           classification: evaluation.classification,
           evaluatedStateVersion: state.stateVersion,
           expiresAtSimulationTimeMs:
