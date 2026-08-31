@@ -80,10 +80,12 @@ describe("WebMCP capability lifecycle", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     await expect(waiting).resolves.toMatchObject({
-      eventKind: "heartbeat",
-      cursor: 0,
       stateVersion: 1,
-      actionRequired: false,
+      data: {
+        eventKind: "heartbeat",
+        cursor: 0,
+        actionRequired: false,
+      },
     });
   });
 
@@ -363,9 +365,11 @@ describe("WebMCP capability lifecycle", () => {
     controller.abort();
 
     await expect(waiting).resolves.toMatchObject({
-      eventKind: "wait-cancelled",
-      cursor: 8,
-      actionRequired: false,
+      data: {
+        eventKind: "wait-cancelled",
+        cursor: 8,
+        actionRequired: false,
+      },
     });
   });
 
@@ -408,9 +412,11 @@ describe("WebMCP capability lifecycle", () => {
     controller.abort();
 
     await expect(waiting).resolves.toMatchObject({
-      eventKind: "wait-cancelled",
-      cursor: 13,
-      actionRequired: false,
+      data: {
+        eventKind: "wait-cancelled",
+        cursor: 13,
+        actionRequired: false,
+      },
     });
   });
 
@@ -452,9 +458,11 @@ describe("WebMCP capability lifecycle", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     await expect(waiting).resolves.toMatchObject({
-      eventKind: "heartbeat",
-      cursor: 21,
-      actionRequired: false,
+      data: {
+        eventKind: "heartbeat",
+        cursor: 21,
+        actionRequired: false,
+      },
     });
   });
 
@@ -502,6 +510,119 @@ describe("WebMCP capability lifecycle", () => {
     });
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
       stagedClearancePlanReference: "phase-0-check",
+    });
+  });
+
+  it("registers every capability with a strict contract and accurate read-only annotation", async () => {
+    const registeredTools = new Map<
+      string,
+      {
+        description: string;
+        inputSchema: Record<string, unknown>;
+        annotations?: { readOnlyHint?: boolean };
+        execute: (input: unknown) => unknown;
+      }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        description: string;
+        inputSchema: Record<string, unknown>;
+        annotations?: { readOnlyHint?: boolean };
+        execute: (input: unknown) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-4-contract-catalog",
+      operatingPosture: "take-the-sector",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+
+    expect([...registeredTools.keys()]).toEqual([
+      "begin_tower_shift",
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+      "stage_clearance_plan",
+      "stage_recovery_plan",
+      "issue_runway_clearance",
+      "issue_tactical_instruction",
+    ]);
+
+    const readOnlyCapabilities = new Set([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+    ]);
+    for (const [name, tool] of registeredTools) {
+      expect(tool.description).not.toBe(
+        `Use the ${name} Flow Control capability.`,
+      );
+      expect(tool.inputSchema).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+      });
+      expect(tool.annotations?.readOnlyHint).toBe(
+        readOnlyCapabilities.has(name),
+      );
+    }
+  });
+
+  it("returns lifecycle and read results through one common result envelope", async () => {
+    const registeredTools = new Map<
+      string,
+      { execute: (input: unknown) => unknown }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        execute: (input: unknown) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-4-result-envelope",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+
+    const beginResult = await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+    expect(beginResult).toMatchObject({
+      status: "success",
+      stateVersion: 1,
+      simulationTimeMs: 0,
+      affectedAircraft: [],
+      summary: expect.any(String),
+      nextAction: "get_tower_snapshot",
+    });
+
+    const snapshotResult = await registeredTools
+      .get("get_tower_snapshot")
+      ?.execute({});
+    expect(snapshotResult).toMatchObject({
+      status: "success",
+      stateVersion: 1,
+      simulationTimeMs: 0,
+      affectedAircraft: [],
+      summary: "Tower snapshot returned.",
+      nextAction: "wait_for_tower_event",
+      data: {
+        scenarioSeed: "phase-4-result-envelope",
+        shiftStatus: "active",
+        stateVersion: 1,
+      },
     });
   });
 });

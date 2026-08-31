@@ -1,9 +1,17 @@
-import type { FlowControlApplication } from "./application";
+import type { FlowControlApplication, TowerSnapshot } from "./application";
+import {
+  isWebMcpCapability,
+  WEBMCP_TOOL_CONTRACTS,
+  type WebMcpCapability,
+  type WebMcpResult,
+  type WebMcpResultStatus,
+} from "./webmcp-contract";
 
 type WebMcpTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations: { readOnlyHint: boolean };
   execute: (
     input: unknown,
     context?: AbortSignal | { signal?: AbortSignal },
@@ -16,12 +24,6 @@ export type ModelContext = {
     options: { signal: AbortSignal },
   ): Promise<void>;
 };
-
-const EMPTY_INPUT_SCHEMA = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
 
 function executionSignal(
   context?: AbortSignal | { signal?: AbortSignal },
@@ -44,6 +46,78 @@ function executionSignal(
     : undefined;
 }
 
+const RESULT_STATUSES = new Set<WebMcpResultStatus>([
+  "success",
+  "refusal",
+  "approval-required",
+  "stale",
+  "unavailable",
+]);
+
+function recordOutcome(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function resultEnvelope<T>({
+  application,
+  outcome,
+  summary,
+  nextAction,
+  data,
+}: {
+  application: FlowControlApplication;
+  outcome?: Record<string, unknown>;
+  summary: string;
+  nextAction?: string;
+  data?: T;
+}): WebMcpResult<T> {
+  const snapshot = application.query({
+    type: "tower-snapshot",
+  }) as TowerSnapshot;
+  const status =
+    typeof outcome?.status === "string" &&
+    RESULT_STATUSES.has(outcome.status as WebMcpResultStatus)
+      ? (outcome.status as WebMcpResultStatus)
+      : "success";
+  const affectedAircraft = Array.isArray(outcome?.affectedAircraft)
+    ? outcome.affectedAircraft.filter(
+        (aircraftId): aircraftId is string => typeof aircraftId === "string",
+      )
+    : [];
+  const simulationTimeMs =
+    typeof outcome?.simulationTimeMs === "number"
+      ? outcome.simulationTimeMs
+      : typeof outcome?.simulationTime === "number"
+        ? outcome.simulationTime
+        : snapshot.simulationTimeMs;
+
+  return {
+    status,
+    stateVersion:
+      typeof outcome?.stateVersion === "number"
+        ? outcome.stateVersion
+        : snapshot.stateVersion,
+    simulationTimeMs,
+    affectedAircraft,
+    summary:
+      typeof outcome?.summary === "string" ? outcome.summary : summary,
+    ...(typeof outcome?.rationale === "string"
+      ? { rationale: outcome.rationale }
+      : {}),
+    ...(typeof outcome?.expiresAtSimulationTimeMs === "number"
+      ? { expiresAtSimulationTimeMs: outcome.expiresAtSimulationTimeMs }
+      : {}),
+    ...(typeof outcome?.nextAction === "string"
+      ? { nextAction: outcome.nextAction }
+      : nextAction
+        ? { nextAction }
+        : {}),
+    ...(data === undefined ? {} : { data }),
+  };
+}
+
 export async function connectWebMcp({
   application,
   modelContext,
@@ -61,11 +135,14 @@ export async function connectWebMcp({
     lifecycle: AbortController,
   ) {
     await Promise.all(
-      capabilities.map((capability) =>
-        modelContext.registerTool(toolFor(capability), {
+      capabilities.map((capability) => {
+        if (!isWebMcpCapability(capability)) {
+          throw new Error(`Unknown WebMCP capability: ${capability}`);
+        }
+        return modelContext.registerTool(toolFor(capability), {
           signal: lifecycle.signal,
-        }),
-      ),
+        });
+      }),
     );
   }
 
@@ -130,20 +207,13 @@ export async function connectWebMcp({
     });
   }
 
-  function toolFor(capability: string): WebMcpTool {
+  function toolFor(capability: WebMcpCapability): WebMcpTool {
+    const contract = WEBMCP_TOOL_CONTRACTS[capability];
+
     if (capability === "begin_tower_shift") {
       return {
         name: capability,
-        description:
-          "Connect the Tower Agent and begin the armed Shift at the current State Version.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            expectedStateVersion: { type: "integer", minimum: 0 },
-          },
-          required: ["expectedStateVersion"],
-          additionalProperties: false,
-        },
+        ...contract,
         async execute(input) {
           const { expectedStateVersion } = input as {
             expectedStateVersion: number;
@@ -155,7 +225,11 @@ export async function connectWebMcp({
           });
 
           await pendingSynchronization;
-          return result;
+          return resultEnvelope({
+            application,
+            outcome: result,
+            summary: "Tower Agent Shift connection processed.",
+          });
         },
       };
     }
@@ -163,12 +237,18 @@ export async function connectWebMcp({
     if (capability === "get_tower_snapshot") {
       return {
         name: capability,
-        description:
-          "Return the current compact, versioned state of the active tower Shift.",
-        inputSchema: EMPTY_INPUT_SCHEMA,
+        ...contract,
         execute() {
           renewAgentLease();
-          return application.query({ type: "tower-snapshot" });
+          const snapshot = application.query({
+            type: "tower-snapshot",
+          }) as TowerSnapshot;
+          return resultEnvelope({
+            application,
+            summary: "Tower snapshot returned.",
+            nextAction: "wait_for_tower_event",
+            data: snapshot,
+          });
         },
       };
     }
@@ -176,17 +256,7 @@ export async function connectWebMcp({
     if (capability === "wait_for_tower_event") {
       return {
         name: capability,
-        description:
-          "Wait for a relevant tower event or a bounded monitoring heartbeat.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            cursor: { type: "integer", minimum: 0 },
-            heartbeatAfterMs: { type: "integer", minimum: 1 },
-          },
-          required: ["cursor", "heartbeatAfterMs"],
-          additionalProperties: false,
-        },
+        ...contract,
         execute(input, context) {
           renewAgentLease();
           application.command({
@@ -204,13 +274,23 @@ export async function connectWebMcp({
             heartbeatAfterMs,
             signal: executionSignal(context),
           });
-          return Promise.resolve(waiting).finally(() => {
-            application.command({
-              type: "set-agent-wait",
-              actor: "capability-registry",
-              active: false,
+          return Promise.resolve(waiting)
+            .then((event) =>
+              resultEnvelope({
+                application,
+                outcome: recordOutcome(event),
+                summary: "Tower event wait completed.",
+                nextAction: "wait_for_tower_event",
+                data: event,
+              }),
+            )
+            .finally(() => {
+              application.command({
+                type: "set-agent-wait",
+                actor: "capability-registry",
+                active: false,
+              });
             });
-          });
         },
       };
     }
@@ -218,28 +298,23 @@ export async function connectWebMcp({
     if (capability === "stage_clearance_plan") {
       return {
         name: capability,
-        description:
-          "Stage a reversible Clearance Plan for Supervising Controller review when active authority permits it.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            planReference: { type: "string", minLength: 1 },
-            expectedStateVersion: { type: "integer", minimum: 0 },
-          },
-          required: ["planReference", "expectedStateVersion"],
-          additionalProperties: false,
-        },
+        ...contract,
         execute(input) {
           renewAgentLease();
           const { planReference, expectedStateVersion } = input as {
             planReference: string;
             expectedStateVersion: number;
           };
-          return application.command({
+          const result = application.command({
             type: "stage-clearance-plan",
             actor: "tower-agent",
             planReference,
             expectedStateVersion,
+          });
+          return resultEnvelope({
+            application,
+            outcome: result,
+            summary: "Clearance Plan staging processed.",
           });
         },
       };
@@ -247,11 +322,18 @@ export async function connectWebMcp({
 
     return {
       name: capability,
-      description: `Use the ${capability} Flow Control capability.`,
-      inputSchema: EMPTY_INPUT_SCHEMA,
+      ...contract,
       execute() {
         renewAgentLease();
-        return application.query({ type: "tower-snapshot" });
+        const snapshot = application.query({
+          type: "tower-snapshot",
+        }) as TowerSnapshot;
+        return resultEnvelope({
+          application,
+          summary: `${capability} context returned.`,
+          nextAction: "continue",
+          data: snapshot,
+        });
       },
     };
   }
