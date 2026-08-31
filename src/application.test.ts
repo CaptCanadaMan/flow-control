@@ -741,6 +741,7 @@ describe("Shift lifecycle", () => {
           aircraftIds: ["fc-101", "fc-404"],
         },
       ],
+      constraints: [],
       mustIssueBySimulationTimeMs: 30_000,
       nextAction: "wait-for-runway-resource",
     });
@@ -749,6 +750,52 @@ describe("Shift lifecycle", () => {
       snapshot: application.query({ type: "tower-snapshot" }),
       receipts: application.query({ type: "operational-receipts" }),
     }).toEqual(beforeEvaluation);
+  });
+
+  it("refuses a runway Clearance whose aircraft capability minimum exceeds the runway", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-runway-capability",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: 1,
+        runwayClearances: [
+          {
+            aircraftId: "fc-505",
+            clearance: {
+              kind: "clear-to-land",
+              runwayId: "04-22",
+              runwayEnd: "22",
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      status: "refusal",
+      valid: false,
+      evaluatedStateVersion: 1,
+      simulationTimeMs: 0,
+      affectedAircraft: ["fc-505"],
+      conflicts: [],
+      constraints: [
+        {
+          kind: "runway-capability",
+          aircraftId: "fc-505",
+          resourceId: "04-22",
+          requiredMinimumRunway: { lengthFeet: 9_500, widthFeet: 150 },
+          availableRunway: { lengthFeet: 5_500, widthFeet: 100 },
+        },
+      ],
+      nextAction: "select-suitable-runway",
+    });
   });
 
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {

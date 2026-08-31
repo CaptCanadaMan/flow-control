@@ -852,9 +852,44 @@ function evaluateRunwayClearanceSet(
     resourceId: string;
     aircraftIds: string[];
   }> = [];
+  const constraints: Array<{
+    kind: "runway-capability";
+    aircraftId: string;
+    resourceId: string;
+    requiredMinimumRunway: { lengthFeet: number; widthFeet: number };
+    availableRunway: { lengthFeet: number; widthFeet: number };
+  }> = [];
   const mustIssueBy: number[] = [];
 
   for (const candidate of runwayClearances) {
+    const aircraft = state.aircraft.find(
+      ({ id }) => id === candidate.aircraftId,
+    );
+    const capabilityProfile = state.aircraftCapabilityProfiles.find(
+      ({ id }) => id === aircraft?.capabilityProfileId,
+    );
+    const runway = state.airport.runways.find(
+      ({ id }) => id === candidate.clearance.runwayId,
+    );
+    if (
+      aircraft &&
+      capabilityProfile &&
+      runway &&
+      (runway.lengthFeet < capabilityProfile.minimumRunway.lengthFeet ||
+        runway.widthFeet < capabilityProfile.minimumRunway.widthFeet)
+    ) {
+      constraints.push({
+        kind: "runway-capability",
+        aircraftId: aircraft.id,
+        resourceId: runway.id,
+        requiredMinimumRunway: { ...capabilityProfile.minimumRunway },
+        availableRunway: {
+          lengthFeet: runway.lengthFeet,
+          widthFeet: runway.widthFeet,
+        },
+      });
+    }
+
     const occupiedRunway = state.runwayResources.runwayOccupancy.filter(
       ({ runwayId }) => runwayId === candidate.clearance.runwayId,
     );
@@ -901,9 +936,12 @@ function evaluateRunwayClearanceSet(
   }
 
   const affectedAircraft = [
-    ...new Set(conflicts.flatMap(({ aircraftIds }) => aircraftIds)),
+    ...new Set([
+      ...conflicts.flatMap(({ aircraftIds }) => aircraftIds),
+      ...constraints.map(({ aircraftId }) => aircraftId),
+    ]),
   ];
-  if (conflicts.length === 0) {
+  if (conflicts.length === 0 && constraints.length === 0) {
     return {
       status: "success" as const,
       valid: true,
@@ -911,6 +949,7 @@ function evaluateRunwayClearanceSet(
       simulationTimeMs: state.simulationTimeMs,
       affectedAircraft,
       conflicts,
+      constraints,
       nextAction: "continue" as const,
     };
   }
@@ -922,8 +961,14 @@ function evaluateRunwayClearanceSet(
     simulationTimeMs: state.simulationTimeMs,
     affectedAircraft,
     conflicts,
-    mustIssueBySimulationTimeMs: Math.min(...mustIssueBy),
-    nextAction: "wait-for-runway-resource" as const,
+    constraints,
+    ...(mustIssueBy.length > 0
+      ? { mustIssueBySimulationTimeMs: Math.min(...mustIssueBy) }
+      : {}),
+    nextAction:
+      conflicts.length > 0
+        ? ("wait-for-runway-resource" as const)
+        : ("select-suitable-runway" as const),
   };
 }
 
