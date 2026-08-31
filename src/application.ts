@@ -511,6 +511,7 @@ type Query =
   | {
       type: "evaluate-clearance-set";
       expectedStateVersion: number;
+      effectiveAtSimulationTimeMs?: number;
       runwayClearances: CandidateRunwayClearance[];
     }
   | { type: "capabilities-to-register" }
@@ -846,6 +847,7 @@ function advanceRunwayResources(state: ApplicationState) {
 function evaluateRunwayClearanceSet(
   state: ApplicationState,
   runwayClearances: CandidateRunwayClearance[],
+  effectiveAtSimulationTimeMs = state.simulationTimeMs,
 ) {
   const conflicts: Array<{
     kind: "runway-occupied" | "intersection-occupied";
@@ -860,6 +862,10 @@ function evaluateRunwayClearanceSet(
     availableRunway: { lengthFeet: number; widthFeet: number };
   }> = [];
   const mustIssueBy: number[] = [];
+  const projectedResources = runwayResourcesAt(
+    state.airport,
+    effectiveAtSimulationTimeMs,
+  );
 
   for (const candidate of runwayClearances) {
     const aircraft = state.aircraft.find(
@@ -890,7 +896,7 @@ function evaluateRunwayClearanceSet(
       });
     }
 
-    const occupiedRunway = state.runwayResources.runwayOccupancy.filter(
+    const occupiedRunway = projectedResources.runwayOccupancy.filter(
       ({ runwayId }) => runwayId === candidate.clearance.runwayId,
     );
     if (occupiedRunway.length > 0) {
@@ -913,7 +919,7 @@ function evaluateRunwayClearanceSet(
       if (!intersection.runwayIds.includes(candidate.clearance.runwayId)) {
         continue;
       }
-      const intersectionOccupants = state.runwayResources.runwayOccupancy.filter(
+      const intersectionOccupants = projectedResources.runwayOccupancy.filter(
         ({ runwayId }) => intersection.runwayIds.includes(runwayId),
       );
       if (intersectionOccupants.length === 0) {
@@ -947,6 +953,9 @@ function evaluateRunwayClearanceSet(
       valid: true,
       evaluatedStateVersion: state.stateVersion,
       simulationTimeMs: state.simulationTimeMs,
+      ...(effectiveAtSimulationTimeMs !== state.simulationTimeMs
+        ? { projectedSimulationTimeMs: effectiveAtSimulationTimeMs }
+        : {}),
       affectedAircraft,
       conflicts,
       constraints,
@@ -959,6 +968,9 @@ function evaluateRunwayClearanceSet(
     valid: false,
     evaluatedStateVersion: state.stateVersion,
     simulationTimeMs: state.simulationTimeMs,
+    ...(effectiveAtSimulationTimeMs !== state.simulationTimeMs
+      ? { projectedSimulationTimeMs: effectiveAtSimulationTimeMs }
+      : {}),
     affectedAircraft,
     conflicts,
     constraints,
@@ -1561,7 +1573,11 @@ export function createFlowControlApplication(options: {
               nextAction: "get_tower_snapshot" as const,
             };
           }
-          return evaluateRunwayClearanceSet(state, query.runwayClearances);
+          return evaluateRunwayClearanceSet(
+            state,
+            query.runwayClearances,
+            query.effectiveAtSimulationTimeMs,
+          );
         case "connection-health": {
           return connectionHealth();
         }

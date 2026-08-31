@@ -798,6 +798,53 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("predicts an upcoming shared-intersection conflict at a candidate Clearance's intended time", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-projective-evaluation",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: 1,
+        effectiveAtSimulationTimeMs: 30_000,
+        runwayClearances: [
+          {
+            aircraftId: "fc-404",
+            clearance: {
+              kind: "clear-for-takeoff",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      status: "refusal",
+      valid: false,
+      evaluatedStateVersion: 1,
+      simulationTimeMs: 0,
+      projectedSimulationTimeMs: 30_000,
+      affectedAircraft: ["fc-202", "fc-404"],
+      conflicts: [
+        {
+          kind: "intersection-occupied",
+          resourceId: "primary-crosswind",
+          aircraftIds: ["fc-202", "fc-404"],
+        },
+      ],
+      constraints: [],
+      mustIssueBySimulationTimeMs: 40_000,
+      nextAction: "wait-for-runway-resource",
+    });
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",
