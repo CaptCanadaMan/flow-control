@@ -1366,6 +1366,73 @@ describe("Shift lifecycle", () => {
     ).not.toHaveProperty("activeRunwayClearance");
   });
 
+  it("replaces a Clearance Plan member with an agent-provided alternative after revalidation", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-plan-alternative",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "departure-option",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+          alternatives: [
+            {
+              kind: "line-up-and-wait",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          ],
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+
+    expect(
+      application.command({
+        type: "select-clearance-plan-alternative",
+        actor: "supervising-controller",
+        memberId: "departure-option:runway-clearance:1",
+        alternativeId:
+          "departure-option:runway-clearance:1:alternative:1",
+        expectedStateVersion: 2,
+      }),
+    ).toEqual({
+      status: "success",
+      stateVersion: 3,
+      summary:
+        "Clearance Plan alternative departure-option:runway-clearance:1:alternative:1 selected; the selected subset remains valid.",
+      nextAction: "await-plan-review",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlan: {
+        members: [
+          {
+            id: "departure-option:runway-clearance:1",
+            selected: true,
+            clearance: {
+              kind: "line-up-and-wait",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+      },
+    });
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",

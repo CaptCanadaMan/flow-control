@@ -199,6 +199,7 @@ type RunwayClearance = {
 type CandidateRunwayClearance = {
   aircraftId: string;
   clearance: RunwayClearance;
+  alternatives?: RunwayClearance[];
 };
 
 type ActionClassification =
@@ -206,12 +207,23 @@ type ActionClassification =
   | "elevated"
   | "exceptional-recovery";
 
+type ClearancePlanAlternative = {
+  id: string;
+  clearance: RunwayClearance;
+};
+
+type ClearancePlanMember = {
+  id: string;
+  aircraftId: string;
+  clearance: RunwayClearance;
+  selected: boolean;
+  alternatives: ClearancePlanAlternative[];
+};
+
 type ClearancePlan = {
   reference: string;
   runwayClearances: CandidateRunwayClearance[];
-  members: Array<
-    CandidateRunwayClearance & { id: string; selected: boolean }
-  >;
+  members: ClearancePlanMember[];
   classification: ActionClassification;
   evaluatedStateVersion: number;
   expiresAtSimulationTimeMs: number;
@@ -222,12 +234,22 @@ type RecoveryPlan = ClearancePlan;
 function clearancePlanMembers(
   reference: string,
   runwayClearances: CandidateRunwayClearance[],
-) {
-  return runwayClearances.map((candidate, index) => ({
-    ...structuredClone(candidate),
-    id: `${reference}:runway-clearance:${index + 1}`,
-    selected: true,
-  }));
+): ClearancePlanMember[] {
+  return runwayClearances.map((candidate, index) => {
+    const id = `${reference}:runway-clearance:${index + 1}`;
+    return {
+      id,
+      aircraftId: candidate.aircraftId,
+      clearance: structuredClone(candidate.clearance),
+      selected: true,
+      alternatives: (candidate.alternatives ?? []).map(
+        (clearance, alternativeIndex) => ({
+          id: `${id}:alternative:${alternativeIndex + 1}`,
+          clearance: structuredClone(clearance),
+        }),
+      ),
+    };
+  });
 }
 
 type TacticalInstruction = {
@@ -501,7 +523,8 @@ type OperationalReceipt = {
     | "clearance-plan-invalidated"
     | "recovery-plan-invalidated"
     | "clearance-plan-member-selection-updated"
-    | "clearance-plan-dispatched";
+    | "clearance-plan-dispatched"
+    | "clearance-plan-alternative-selected";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
@@ -650,6 +673,14 @@ type DispatchSelectedClearancePlanCommand = {
   expectedStateVersion: number;
 };
 
+type SelectClearancePlanAlternativeCommand = {
+  type: "select-clearance-plan-alternative";
+  actor: "supervising-controller";
+  memberId: string;
+  alternativeId: string;
+  expectedStateVersion: number;
+};
+
 type AdvanceSimulationCommand = {
   type: "advance-simulation";
   actor: "simulation-clock";
@@ -685,6 +716,7 @@ type Command =
   | StageRecoveryPlanCommand
   | SetClearancePlanMemberSelectionCommand
   | DispatchSelectedClearancePlanCommand
+  | SelectClearancePlanAlternativeCommand
   | IssueRunwayClearanceCommand
   | IssueTacticalInstructionCommand
   | AdvanceSimulationCommand;
@@ -1792,6 +1824,89 @@ export function createFlowControlApplication(options: {
           summary: `Clearance Plan member ${command.memberId} is ${
             command.selected ? "selected" : "deselected"
           }; the selected subset remains valid.`,
+          nextAction: "await-plan-review" as const,
+        };
+      }
+
+      if (command.type === "select-clearance-plan-alternative") {
+        const plan = state.stagedClearancePlan;
+        if (!plan) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Clearance Plan alternative selection requires an active Clearance Plan.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+        const member = plan.members.find(({ id }) => id === command.memberId);
+        const alternative = member?.alternatives.find(
+          ({ id }) => id === command.alternativeId,
+        );
+        if (!member || !alternative) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `Clearance Plan alternative ${command.alternativeId} was not found.`,
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        const members = plan.members.map((candidate) =>
+          candidate.id === command.memberId
+            ? {
+                ...candidate,
+                clearance: structuredClone(alternative.clearance),
+                selected: true,
+              }
+            : candidate,
+        );
+        const evaluation = evaluateRunwayClearanceSet(
+          state,
+          members
+            .filter(({ selected }) => selected)
+            .map(({ aircraftId, clearance }) => ({ aircraftId, clearance })),
+        );
+        if (!evaluation.valid) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "The selected Clearance Plan subset is not valid with that alternative.",
+            nextAction: evaluation.nextAction,
+          };
+        }
+
+        state.stagedClearancePlan = {
+          ...plan,
+          runwayClearances: members.map(
+            ({ aircraftId, clearance, alternatives }) => ({
+              aircraftId,
+              clearance: structuredClone(clearance),
+              alternatives: alternatives.map(({ clearance }) =>
+                structuredClone(clearance),
+              ),
+            }),
+          ),
+          members,
+          classification: evaluation.classification,
+          evaluatedStateVersion: state.stateVersion,
+        };
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "clearance-plan-alternative-selected",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `Clearance Plan alternative ${command.alternativeId} selected; the selected subset remains valid.`,
           nextAction: "await-plan-review" as const,
         };
       }
