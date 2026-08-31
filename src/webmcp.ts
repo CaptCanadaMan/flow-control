@@ -4,7 +4,7 @@ type WebMcpTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  execute: (input: unknown) => unknown;
+  execute: (input: unknown, signal?: AbortSignal) => unknown;
 };
 
 export type ModelContext = {
@@ -27,15 +27,15 @@ export async function connectWebMcp({
   application: FlowControlApplication;
   modelContext: ModelContext;
 }) {
-  let lifecycle = new AbortController();
+  let lifecycles = [new AbortController()];
+  let registeredCapabilities: string[] = [];
   let capabilityKey = "";
   let pendingSynchronization = Promise.resolve();
 
-  async function registerCurrentCapabilities() {
-    const capabilities = application.query({
-      type: "available-capabilities",
-    }) as string[];
-
+  async function registerCapabilities(
+    capabilities: string[],
+    lifecycle: AbortController,
+  ) {
     await Promise.all(
       capabilities.map((capability) =>
         modelContext.registerTool(toolFor(capability), {
@@ -43,12 +43,20 @@ export async function connectWebMcp({
         }),
       ),
     );
+  }
+
+  async function registerCurrentCapabilities() {
+    const capabilities = application.query({
+      type: "available-capabilities",
+    }) as string[];
+    await registerCapabilities(capabilities, lifecycles[0]);
+    registeredCapabilities = capabilities;
     capabilityKey = capabilities.join("|");
   }
 
   async function synchronizeCapabilities() {
     const capabilities = application.query({
-      type: "available-capabilities",
+      type: "capabilities-to-register",
     }) as string[];
     const nextCapabilityKey = capabilities.join("|");
 
@@ -56,9 +64,46 @@ export async function connectWebMcp({
       return;
     }
 
-    lifecycle.abort();
-    lifecycle = new AbortController();
-    await registerCurrentCapabilities();
+    const isExpansion = registeredCapabilities.every((capability) =>
+      capabilities.includes(capability),
+    );
+
+    if (isExpansion) {
+      const addedCapabilities = capabilities.filter(
+        (capability) => !registeredCapabilities.includes(capability),
+      );
+      const grantLifecycle = new AbortController();
+      lifecycles.push(grantLifecycle);
+      await registerCapabilities(addedCapabilities, grantLifecycle);
+      registeredCapabilities = capabilities;
+      capabilityKey = nextCapabilityKey;
+
+      const snapshot = application.query({ type: "tower-snapshot" });
+      if (
+        "capabilitySynchronization" in snapshot &&
+        snapshot.capabilitySynchronization === "pending"
+      ) {
+        application.command({
+          type: "complete-capability-synchronization",
+          actor: "capability-registry",
+          expectedStateVersion: snapshot.stateVersion,
+        });
+      }
+      return;
+    }
+
+    lifecycles.forEach((lifecycle) => lifecycle.abort());
+    lifecycles = [new AbortController()];
+    await registerCapabilities(capabilities, lifecycles[0]);
+    registeredCapabilities = capabilities;
+    capabilityKey = nextCapabilityKey;
+  }
+
+  function renewAgentLease() {
+    application.command({
+      type: "renew-agent-lease",
+      actor: "capability-registry",
+    });
   }
 
   function toolFor(capability: string): WebMcpTool {
@@ -98,6 +143,7 @@ export async function connectWebMcp({
           "Return the current compact, versioned state of the active tower Shift.",
         inputSchema: EMPTY_INPUT_SCHEMA,
         execute() {
+          renewAgentLease();
           return application.query({ type: "tower-snapshot" });
         },
       };
@@ -117,15 +163,59 @@ export async function connectWebMcp({
           required: ["cursor", "heartbeatAfterMs"],
           additionalProperties: false,
         },
-        execute(input) {
+        execute(input, signal) {
+          renewAgentLease();
+          application.command({
+            type: "set-agent-wait",
+            actor: "capability-registry",
+            active: true,
+          });
           const { cursor, heartbeatAfterMs } = input as {
             cursor: number;
             heartbeatAfterMs: number;
           };
-          return application.query({
+          const waiting = application.query({
             type: "wait-for-tower-event",
             cursor,
             heartbeatAfterMs,
+            signal,
+          });
+          return Promise.resolve(waiting).finally(() => {
+            application.command({
+              type: "set-agent-wait",
+              actor: "capability-registry",
+              active: false,
+            });
+          });
+        },
+      };
+    }
+
+    if (capability === "stage_clearance_plan") {
+      return {
+        name: capability,
+        description:
+          "Stage a reversible Clearance Plan for Supervising Controller review when active authority permits it.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            planReference: { type: "string", minLength: 1 },
+            expectedStateVersion: { type: "integer", minimum: 0 },
+          },
+          required: ["planReference", "expectedStateVersion"],
+          additionalProperties: false,
+        },
+        execute(input) {
+          renewAgentLease();
+          const { planReference, expectedStateVersion } = input as {
+            planReference: string;
+            expectedStateVersion: number;
+          };
+          return application.command({
+            type: "stage-clearance-plan",
+            actor: "tower-agent",
+            planReference,
+            expectedStateVersion,
           });
         },
       };
@@ -136,6 +226,7 @@ export async function connectWebMcp({
       description: `Use the ${capability} Flow Control capability.`,
       inputSchema: EMPTY_INPUT_SCHEMA,
       execute() {
+        renewAgentLease();
         return application.query({ type: "tower-snapshot" });
       },
     };
@@ -151,7 +242,7 @@ export async function connectWebMcp({
   return {
     disconnect() {
       unsubscribe();
-      lifecycle.abort();
+      lifecycles.forEach((lifecycle) => lifecycle.abort());
     },
   };
 }

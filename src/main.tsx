@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { App } from "./App";
+import { App, type ConnectionHealth } from "./App";
 import {
   createFlowControlApplication,
   type TowerSnapshot,
@@ -38,8 +38,28 @@ function FlowControlPage() {
       ? (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
       : undefined,
   );
+  const [connectionHealth, setConnectionHealth] =
+    useState<ConnectionHealth>("healthy");
 
-  useEffect(() => application?.subscribe(setSnapshot), []);
+  useEffect(() => {
+    if (!application) {
+      return;
+    }
+
+    const unsubscribe = application.subscribe(setSnapshot);
+    const refreshConnectionHealth = () => {
+      const health = application.query({ type: "connection-health" }) as {
+        state: ConnectionHealth;
+      };
+      setConnectionHealth(health.state);
+    };
+    const interval = globalThis.setInterval(refreshConnectionHealth, 500);
+
+    return () => {
+      unsubscribe();
+      globalThis.clearInterval(interval);
+    };
+  }, []);
 
   return (
     <App
@@ -47,6 +67,10 @@ function FlowControlPage() {
       shiftStatus={snapshot?.shiftStatus}
       stateVersion={snapshot?.stateVersion}
       operatingPosture={snapshot?.operatingPosture}
+      pendingOperatingPosture={snapshot?.pendingOperatingPosture}
+      capabilitySynchronization={snapshot?.capabilitySynchronization}
+      connectionHealth={connectionHealth}
+      stagedClearancePlanReference={snapshot?.stagedClearancePlanReference}
       onReduceToObserve={() => {
         if (!application || !snapshot) {
           return;
@@ -55,6 +79,27 @@ function FlowControlPage() {
           type: "reduce-operating-posture",
           actor: "supervising-controller",
           operatingPosture: "observe",
+          expectedStateVersion: snapshot.stateVersion,
+        });
+      }}
+      onRequestTakeTheSector={() => {
+        if (!application || !snapshot) {
+          return;
+        }
+        application.command({
+          type: "request-operating-posture-increase",
+          actor: "supervising-controller",
+          operatingPosture: "take-the-sector",
+          expectedStateVersion: snapshot.stateVersion,
+        });
+      }}
+      onConfirmTakeTheSector={() => {
+        if (!application || !snapshot) {
+          return;
+        }
+        application.command({
+          type: "confirm-operating-posture-increase",
+          actor: "supervising-controller",
           expectedStateVersion: snapshot.stateVersion,
         });
       }}

@@ -82,6 +82,28 @@ section {
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 20%);
 }
 
+.connection-banner {
+  grid-column: 1 / -1;
+  padding: 0.8rem 1rem;
+  border: 1px solid #8a6b2c;
+  border-radius: 0.65rem;
+  color: #f9e5aa;
+  background: #3a2d12;
+  font-size: 0.85rem;
+}
+
+.connection-banner.unavailable {
+  border-color: #934b4b;
+  color: #ffd4d4;
+  background: #401b1b;
+}
+
+.connection-banner.reconnected {
+  border-color: #3b7d65;
+  color: #c8f5e3;
+  background: #16382e;
+}
+
 section + section {
   margin-top: 1rem;
 }
@@ -115,6 +137,14 @@ button:focus-visible {
   border-color: #6ee7b7;
   outline: none;
   background: #1d483e;
+}
+
+.staged-plan {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+  color: #d8f7eb;
+  font-size: 0.85rem;
 }
 
 footer {
