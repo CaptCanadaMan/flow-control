@@ -52,6 +52,101 @@ describe("Shift lifecycle", () => {
     ]);
   });
 
+  it("replays the same fixed-timestep command sequence deterministically", () => {
+    const runShift = () => {
+      const application = createFlowControlApplication({
+        scenarioSeed: "phase-1-tracer",
+        operatingPosture: "observe",
+        simulation: {
+          fixedTimeStepMs: 100,
+          paceMultiplier: 1.5,
+        },
+      });
+
+      application.command({
+        type: "begin-shift",
+        actor: "tower-agent",
+        expectedStateVersion: 0,
+      });
+      application.command({
+        type: "advance-simulation",
+        actor: "simulation-clock",
+      });
+      application.command({
+        type: "advance-simulation",
+        actor: "simulation-clock",
+      });
+
+      return {
+        snapshot: application.query({ type: "tower-snapshot" }),
+        receipts: application.query({ type: "operational-receipts" }),
+      };
+    };
+
+    const firstRun = runShift();
+    const replay = runShift();
+
+    expect(replay).toEqual(firstRun);
+    expect(firstRun).toEqual({
+      snapshot: {
+        shiftStatus: "active",
+        scenarioSeed: "phase-1-tracer",
+        operatingPosture: "observe",
+        pendingOperatingPosture: undefined,
+        capabilitySynchronization: undefined,
+        stagedClearancePlanReference: undefined,
+        simulationTimeMs: 300,
+        stateVersion: 1,
+        weather: {
+          preset: "light-northerly",
+          windDirectionDegrees: 350,
+          windSpeedKnots: 6,
+          visibilityStatuteMiles: 10,
+          ceilingFeet: 6_000,
+        },
+      },
+      receipts: [
+        {
+          actor: "tower-agent",
+          action: "shift-began",
+          simulationTimeMs: 0,
+          stateVersionBefore: 0,
+          stateVersionAfter: 1,
+        },
+      ],
+    });
+  });
+
+  it("uses the Scenario Seed to select reproducible static VFR weather", () => {
+    const snapshotFor = (scenarioSeed: string) =>
+      createFlowControlApplication({
+        scenarioSeed,
+        operatingPosture: "observe",
+      }).query({ type: "tower-snapshot" });
+
+    const firstRun = snapshotFor("phase-1-weather-alpha");
+
+    expect(snapshotFor("phase-1-weather-alpha")).toEqual(firstRun);
+    expect(firstRun).toMatchObject({
+      weather: {
+        preset: "light-northerly",
+        windDirectionDegrees: 350,
+        windSpeedKnots: 6,
+        visibilityStatuteMiles: 10,
+        ceilingFeet: 6_000,
+      },
+    });
+    expect(snapshotFor("phase-1-weather-bravo")).toMatchObject({
+      weather: {
+        preset: "westerly",
+        windDirectionDegrees: 270,
+        windSpeedKnots: 10,
+        visibilityStatuteMiles: 10,
+        ceilingFeet: 5_000,
+      },
+    });
+  });
+
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
     vi.useFakeTimers();
     const application = createFlowControlApplication({

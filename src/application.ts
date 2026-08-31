@@ -1,5 +1,17 @@
 export type OperatingPosture = "observe" | "assist" | "take-the-sector";
 
+type StaticVfrWeather = {
+  preset:
+    | "light-northerly"
+    | "westerly"
+    | "southwesterly"
+    | "light-easterly";
+  windDirectionDegrees: number;
+  windSpeedKnots: number;
+  visibilityStatuteMiles: number;
+  ceilingFeet: number;
+};
+
 type Capability =
   | "begin_tower_shift"
   | "get_tower_snapshot"
@@ -21,17 +33,20 @@ type OperationalReceipt = {
     | "operating-posture-increase-confirmed"
     | "capability-synchronization-completed"
     | "clearance-plan-staged";
+  simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
 };
 
 type ApplicationState = {
   scenarioSeed: string;
+  weather: StaticVfrWeather;
   operatingPosture: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
   shiftStatus: "armed" | "active";
+  simulationTimeMs: number;
   stateVersion: number;
   operationalReceipts: OperationalReceipt[];
 };
@@ -40,6 +55,8 @@ export type TowerSnapshot = Pick<
   ApplicationState,
   "shiftStatus" | "scenarioSeed" | "operatingPosture" | "stateVersion"
 > & {
+  simulationTimeMs: number;
+  weather: StaticVfrWeather;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -108,6 +125,11 @@ type StageClearancePlanCommand = {
   expectedStateVersion: number;
 };
 
+type AdvanceSimulationCommand = {
+  type: "advance-simulation";
+  actor: "simulation-clock";
+};
+
 type Command =
   | BeginShiftCommand
   | ReduceOperatingPostureCommand
@@ -116,7 +138,8 @@ type Command =
   | CompleteCapabilitySynchronizationCommand
   | RenewAgentLeaseCommand
   | SetAgentWaitCommand
-  | StageClearancePlanCommand;
+  | StageClearancePlanCommand
+  | AdvanceSimulationCommand;
 
 const OBSERVE_CAPABILITIES: Capability[] = [
   "get_tower_snapshot",
@@ -131,6 +154,68 @@ const POSTURE_LABELS: Record<OperatingPosture, string> = {
   assist: "Assist",
   "take-the-sector": "Take the Sector",
 };
+
+const VFR_WEATHER_PRESETS: readonly StaticVfrWeather[] = [
+  {
+    preset: "light-northerly",
+    windDirectionDegrees: 350,
+    windSpeedKnots: 6,
+    visibilityStatuteMiles: 10,
+    ceilingFeet: 6_000,
+  },
+  {
+    preset: "westerly",
+    windDirectionDegrees: 270,
+    windSpeedKnots: 10,
+    visibilityStatuteMiles: 10,
+    ceilingFeet: 5_000,
+  },
+  {
+    preset: "southwesterly",
+    windDirectionDegrees: 220,
+    windSpeedKnots: 12,
+    visibilityStatuteMiles: 8,
+    ceilingFeet: 4_500,
+  },
+  {
+    preset: "light-easterly",
+    windDirectionDegrees: 80,
+    windSpeedKnots: 7,
+    visibilityStatuteMiles: 10,
+    ceilingFeet: 5_500,
+  },
+];
+
+function createSeededRandom(scenarioSeed: string) {
+  let state = 2_166_136_261;
+  for (let index = 0; index < scenarioSeed.length; index += 1) {
+    state ^= scenarioSeed.charCodeAt(index);
+    state = Math.imul(state, 16_777_619) >>> 0;
+  }
+  state ||= 0x9e3779b9;
+
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 4_294_967_296;
+  };
+}
+
+function selectStaticVfrWeather(random: () => number): StaticVfrWeather {
+  const preset =
+    VFR_WEATHER_PRESETS[
+      Math.floor(random() * VFR_WEATHER_PRESETS.length)
+    ];
+  return { ...preset };
+}
+
+function generateScenario(scenarioSeed: string) {
+  const random = createSeededRandom(scenarioSeed);
+  return {
+    weather: selectStaticVfrWeather(random),
+  };
+}
 
 function activeCapabilities(posture: OperatingPosture): Capability[] {
   if (posture === "observe") {
@@ -156,6 +241,10 @@ function activeCapabilities(posture: OperatingPosture): Capability[] {
 export function createFlowControlApplication(options: {
   scenarioSeed: string;
   operatingPosture: OperatingPosture;
+  simulation?: {
+    fixedTimeStepMs: number;
+    paceMultiplier: number;
+  };
   wallClockNow?: () => number;
   connectionLease?: {
     warningAfterMs: number;
@@ -169,11 +258,18 @@ export function createFlowControlApplication(options: {
       warningAfterMs: 30_000,
       unavailableAfterMs: 60_000,
     },
+    simulation = {
+      fixedTimeStepMs: 100,
+      paceMultiplier: 1,
+    },
     ...initialState
   } = options;
+  const scenario = generateScenario(initialState.scenarioSeed);
   const state: ApplicationState = {
     ...initialState,
+    ...scenario,
     shiftStatus: "armed",
+    simulationTimeMs: 0,
     stateVersion: 0,
     operationalReceipts: [],
   };
@@ -186,7 +282,9 @@ export function createFlowControlApplication(options: {
     return {
       shiftStatus: state.shiftStatus,
       scenarioSeed: state.scenarioSeed,
+      weather: { ...state.weather },
       operatingPosture: state.operatingPosture,
+      simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,
       pendingOperatingPosture: state.pendingOperatingPosture,
       capabilitySynchronization: state.capabilitySynchronization,
@@ -247,6 +345,30 @@ export function createFlowControlApplication(options: {
         };
       }
 
+      if (command.type === "advance-simulation") {
+        if (state.shiftStatus !== "active") {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Simulation time cannot advance before the Shift begins.",
+            nextAction: "begin_tower_shift" as const,
+          };
+        }
+
+        state.simulationTimeMs +=
+          simulation.fixedTimeStepMs * simulation.paceMultiplier;
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          simulationTimeMs: state.simulationTimeMs,
+          summary: `Simulation advanced to ${state.simulationTimeMs} ms.`,
+          nextAction: "continue" as const,
+        };
+      }
+
       if (command.expectedStateVersion !== state.stateVersion) {
         return {
           status: "stale" as const,
@@ -279,6 +401,7 @@ export function createFlowControlApplication(options: {
         state.operationalReceipts.push({
           actor: command.actor,
           action: "clearance-plan-staged",
+          simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
@@ -300,6 +423,7 @@ export function createFlowControlApplication(options: {
         state.operationalReceipts.push({
           actor: command.actor,
           action: "operating-posture-reduced",
+          simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
@@ -322,6 +446,7 @@ export function createFlowControlApplication(options: {
         state.operationalReceipts.push({
           actor: command.actor,
           action: "operating-posture-increase-requested",
+          simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
@@ -343,6 +468,7 @@ export function createFlowControlApplication(options: {
         state.operationalReceipts.push({
           actor: command.actor,
           action: "operating-posture-increase-confirmed",
+          simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
@@ -367,6 +493,7 @@ export function createFlowControlApplication(options: {
         state.operationalReceipts.push({
           actor: command.actor,
           action: "capability-synchronization-completed",
+          simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
@@ -398,6 +525,7 @@ export function createFlowControlApplication(options: {
       state.operationalReceipts.push({
         actor: command.actor,
         action: "shift-began",
+        simulationTimeMs: state.simulationTimeMs,
         stateVersionBefore,
         stateVersionAfter: state.stateVersion,
       });
