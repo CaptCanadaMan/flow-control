@@ -12,6 +12,96 @@ type StaticVfrWeather = {
   ceilingFeet: number;
 };
 
+const FLOW_FIELD_GEOMETRY = {
+  id: "FLOW",
+  name: "Flow Field",
+  referencePoint: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+  localControlBoundary: {
+    shape: "circle",
+    center: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+    radiusNauticalMiles: 8,
+  },
+  runways: [
+    {
+      id: "09-27",
+      role: "primary",
+      center: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+      headingDegrees: 90,
+      lengthFeet: 11_500,
+      widthFeet: 150,
+      runwayEnds: ["09", "27"],
+    },
+    {
+      id: "04-22",
+      role: "crosswind",
+      center: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+      headingDegrees: 40,
+      lengthFeet: 5_500,
+      widthFeet: 100,
+      runwayEnds: ["04", "22"],
+    },
+  ],
+  intersections: [
+    {
+      id: "primary-crosswind",
+      runwayIds: ["09-27", "04-22"],
+      position: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+    },
+  ],
+  circuits: [
+    {
+      id: "runway-09-left",
+      runwayId: "09-27",
+      runwayEnd: "09",
+      direction: "left",
+      altitudeFeetAgl: 1_000,
+      legs: [
+        {
+          id: "upwind",
+          from: { eastNauticalMiles: 0.95, northNauticalMiles: 0 },
+          to: { eastNauticalMiles: 2, northNauticalMiles: 0 },
+        },
+        {
+          id: "crosswind",
+          from: { eastNauticalMiles: 2, northNauticalMiles: 0 },
+          to: { eastNauticalMiles: 2, northNauticalMiles: 1.5 },
+        },
+        {
+          id: "downwind",
+          from: { eastNauticalMiles: 2, northNauticalMiles: 1.5 },
+          to: { eastNauticalMiles: -2, northNauticalMiles: 1.5 },
+        },
+        {
+          id: "base",
+          from: { eastNauticalMiles: -2, northNauticalMiles: 1.5 },
+          to: { eastNauticalMiles: -2, northNauticalMiles: 0 },
+        },
+        {
+          id: "final",
+          from: { eastNauticalMiles: -2, northNauticalMiles: 0 },
+          to: { eastNauticalMiles: -0.95, northNauticalMiles: 0 },
+        },
+      ],
+    },
+  ],
+  holdingAreas: [
+    {
+      id: "northwest-hold",
+      name: "Northwest Hold",
+      center: { eastNauticalMiles: -3.5, northNauticalMiles: 3.5 },
+      radiusNauticalMiles: 0.75,
+    },
+    {
+      id: "southeast-hold",
+      name: "Southeast Hold",
+      center: { eastNauticalMiles: 3.5, northNauticalMiles: -3.5 },
+      radiusNauticalMiles: 0.75,
+    },
+  ],
+} as const;
+
+type AirportGeometry = typeof FLOW_FIELD_GEOMETRY;
+
 type Capability =
   | "begin_tower_shift"
   | "get_tower_snapshot"
@@ -41,6 +131,7 @@ type OperationalReceipt = {
 type ApplicationState = {
   scenarioSeed: string;
   weather: StaticVfrWeather;
+  airport: AirportGeometry;
   operatingPosture: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
@@ -57,6 +148,7 @@ export type TowerSnapshot = Pick<
 > & {
   simulationTimeMs: number;
   weather: StaticVfrWeather;
+  airport: AirportGeometry;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -214,6 +306,7 @@ function generateScenario(scenarioSeed: string) {
   const random = createSeededRandom(scenarioSeed);
   return {
     weather: selectStaticVfrWeather(random),
+    airport: structuredClone(FLOW_FIELD_GEOMETRY),
   };
 }
 
@@ -283,6 +376,7 @@ export function createFlowControlApplication(options: {
       shiftStatus: state.shiftStatus,
       scenarioSeed: state.scenarioSeed,
       weather: { ...state.weather },
+      airport: structuredClone(state.airport),
       operatingPosture: state.operatingPosture,
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,

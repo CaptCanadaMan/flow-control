@@ -2,6 +2,94 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createFlowControlApplication } from "./application";
 
+const EXPECTED_AIRPORT_GEOMETRY = {
+  id: "FLOW",
+  name: "Flow Field",
+  referencePoint: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+  localControlBoundary: {
+    shape: "circle",
+    center: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+    radiusNauticalMiles: 8,
+  },
+  runways: [
+    {
+      id: "09-27",
+      role: "primary",
+      center: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+      headingDegrees: 90,
+      lengthFeet: 11_500,
+      widthFeet: 150,
+      runwayEnds: ["09", "27"],
+    },
+    {
+      id: "04-22",
+      role: "crosswind",
+      center: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+      headingDegrees: 40,
+      lengthFeet: 5_500,
+      widthFeet: 100,
+      runwayEnds: ["04", "22"],
+    },
+  ],
+  intersections: [
+    {
+      id: "primary-crosswind",
+      runwayIds: ["09-27", "04-22"],
+      position: { eastNauticalMiles: 0, northNauticalMiles: 0 },
+    },
+  ],
+  circuits: [
+    {
+      id: "runway-09-left",
+      runwayId: "09-27",
+      runwayEnd: "09",
+      direction: "left",
+      altitudeFeetAgl: 1_000,
+      legs: [
+        {
+          id: "upwind",
+          from: { eastNauticalMiles: 0.95, northNauticalMiles: 0 },
+          to: { eastNauticalMiles: 2, northNauticalMiles: 0 },
+        },
+        {
+          id: "crosswind",
+          from: { eastNauticalMiles: 2, northNauticalMiles: 0 },
+          to: { eastNauticalMiles: 2, northNauticalMiles: 1.5 },
+        },
+        {
+          id: "downwind",
+          from: { eastNauticalMiles: 2, northNauticalMiles: 1.5 },
+          to: { eastNauticalMiles: -2, northNauticalMiles: 1.5 },
+        },
+        {
+          id: "base",
+          from: { eastNauticalMiles: -2, northNauticalMiles: 1.5 },
+          to: { eastNauticalMiles: -2, northNauticalMiles: 0 },
+        },
+        {
+          id: "final",
+          from: { eastNauticalMiles: -2, northNauticalMiles: 0 },
+          to: { eastNauticalMiles: -0.95, northNauticalMiles: 0 },
+        },
+      ],
+    },
+  ],
+  holdingAreas: [
+    {
+      id: "northwest-hold",
+      name: "Northwest Hold",
+      center: { eastNauticalMiles: -3.5, northNauticalMiles: 3.5 },
+      radiusNauticalMiles: 0.75,
+    },
+    {
+      id: "southeast-hold",
+      name: "Southeast Hold",
+      center: { eastNauticalMiles: 3.5, northNauticalMiles: -3.5 },
+      radiusNauticalMiles: 0.75,
+    },
+  ],
+} as const;
+
 describe("Shift lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -104,6 +192,7 @@ describe("Shift lifecycle", () => {
           visibilityStatuteMiles: 10,
           ceilingFeet: 6_000,
         },
+        airport: EXPECTED_AIRPORT_GEOMETRY,
       },
       receipts: [
         {
@@ -144,6 +233,17 @@ describe("Shift lifecycle", () => {
         visibilityStatuteMiles: 10,
         ceilingFeet: 5_000,
       },
+    });
+  });
+
+  it("exposes the fictional airport as explicit operational geometry", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-1-airport",
+      operatingPosture: "observe",
+    });
+
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      airport: EXPECTED_AIRPORT_GEOMETRY,
     });
   });
 
