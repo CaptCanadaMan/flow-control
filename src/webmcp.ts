@@ -4,7 +4,10 @@ type WebMcpTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  execute: (input: unknown, signal?: AbortSignal) => unknown;
+  execute: (
+    input: unknown,
+    context?: AbortSignal | { signal?: AbortSignal },
+  ) => unknown;
 };
 
 export type ModelContext = {
@@ -19,6 +22,27 @@ const EMPTY_INPUT_SCHEMA = {
   properties: {},
   additionalProperties: false,
 } as const;
+
+function executionSignal(
+  context?: AbortSignal | { signal?: AbortSignal },
+) {
+  if (
+    context &&
+    "addEventListener" in context &&
+    typeof context.addEventListener === "function" &&
+    "removeEventListener" in context &&
+    typeof context.removeEventListener === "function"
+  ) {
+    return context;
+  }
+
+  const signal = context && "signal" in context ? context.signal : undefined;
+  return signal &&
+    typeof signal.addEventListener === "function" &&
+    typeof signal.removeEventListener === "function"
+    ? signal
+    : undefined;
+}
 
 export async function connectWebMcp({
   application,
@@ -163,7 +187,7 @@ export async function connectWebMcp({
           required: ["cursor", "heartbeatAfterMs"],
           additionalProperties: false,
         },
-        execute(input, signal) {
+        execute(input, context) {
           renewAgentLease();
           application.command({
             type: "set-agent-wait",
@@ -178,7 +202,7 @@ export async function connectWebMcp({
             type: "wait-for-tower-event",
             cursor,
             heartbeatAfterMs,
-            signal,
+            signal: executionSignal(context),
           });
           return Promise.resolve(waiting).finally(() => {
             application.command({

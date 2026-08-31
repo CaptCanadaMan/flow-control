@@ -369,6 +369,95 @@ describe("WebMCP capability lifecycle", () => {
     });
   });
 
+  it("accepts the host execution context when forwarding wait cancellation", async () => {
+    vi.useFakeTimers();
+    const registeredTools = new Map<
+      string,
+      {
+        execute: (
+          input: unknown,
+          context?: { signal?: AbortSignal },
+        ) => unknown;
+      }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        execute: (
+          input: unknown,
+          context?: { signal?: AbortSignal },
+        ) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+    const controller = new AbortController();
+
+    const waiting = registeredTools.get("wait_for_tower_event")?.execute(
+      { cursor: 13, heartbeatAfterMs: 5_000 },
+      { signal: controller.signal },
+    );
+    controller.abort();
+
+    await expect(waiting).resolves.toMatchObject({
+      eventKind: "wait-cancelled",
+      cursor: 13,
+      actionRequired: false,
+    });
+  });
+
+  it("ignores host execution context that does not contain an AbortSignal", async () => {
+    vi.useFakeTimers();
+    const registeredTools = new Map<
+      string,
+      {
+        execute: (
+          input: unknown,
+          context?: { signal?: AbortSignal },
+        ) => unknown;
+      }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        execute: (
+          input: unknown,
+          context?: { signal?: AbortSignal },
+        ) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+
+    const waiting = registeredTools.get("wait_for_tower_event")?.execute(
+      { cursor: 21, heartbeatAfterMs: 1_000 },
+      { signal: "host-context-value" as unknown as AbortSignal },
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(waiting).resolves.toMatchObject({
+      eventKind: "heartbeat",
+      cursor: 21,
+      actionRequired: false,
+    });
+  });
+
   it("routes a strict Clearance Plan tool through policy-protected staging", async () => {
     const registeredTools = new Map<
       string,
