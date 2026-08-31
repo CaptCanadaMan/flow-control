@@ -560,6 +560,7 @@ type OperationalReceipt = {
 
 type ApplicationState = {
   scenarioSeed: string;
+  controllerScreenName?: string;
   weather: StaticVfrWeather;
   airport: AirportGeometry;
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
@@ -583,7 +584,11 @@ type ApplicationState = {
 
 export type TowerSnapshot = Pick<
   ApplicationState,
-  "shiftStatus" | "scenarioSeed" | "operatingPosture" | "stateVersion"
+  | "shiftStatus"
+  | "scenarioSeed"
+  | "controllerScreenName"
+  | "operatingPosture"
+  | "stateVersion"
 > & {
   simulationTimeMs: number;
   weather: StaticVfrWeather;
@@ -1332,6 +1337,7 @@ function activeCapabilities(
 
 export function createFlowControlApplication(options: {
   scenarioSeed: string;
+  controllerScreenName?: string;
   operatingPosture: OperatingPosture;
   simulation?: {
     fixedTimeStepMs: number;
@@ -1375,6 +1381,7 @@ export function createFlowControlApplication(options: {
     return {
       shiftStatus: state.shiftStatus,
       scenarioSeed: state.scenarioSeed,
+      controllerScreenName: state.controllerScreenName,
       weather: { ...state.weather },
       airport: structuredClone(state.airport),
       aircraftCapabilityProfiles: structuredClone(state.aircraftCapabilityProfiles),
