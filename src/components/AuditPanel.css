@@ -1,0 +1,45 @@
+.audit-panel {
+  min-width: 0;
+}
+
+.audit-disclosure {
+  color: #c4dbd1;
+}
+
+.audit-disclosure summary {
+  cursor: pointer;
+  color: #d8f7eb;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.audit-records {
+  display: grid;
+  gap: 0.7rem;
+  margin: 0.85rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-records li {
+  padding-left: 0.75rem;
+  border-left: 2px solid #4b7569;
+}
+
+.audit-records p {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+}
+
+.audit-record-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  color: #d8f7eb;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.audit-record-meta time {
+  color: #6ee7b7;
+}

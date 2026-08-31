@@ -1,0 +1,86 @@
+.active-plan-summary {
+  color: #d7ede4;
+}
+
+.active-plan-members {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0 0 0.9rem;
+  padding: 0;
+  color: #c4dbd1;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  list-style: none;
+}
+
+.active-plan-members > li {
+  display: grid;
+  gap: 0.55rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid #4b7569;
+}
+
+.active-plan-member-selection {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.55rem;
+  align-items: start;
+  cursor: pointer;
+}
+
+.active-plan-member-selection input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.05rem 0 0;
+  accent-color: #6ee7b7;
+}
+
+.active-plan-alternatives {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.active-plan-alternatives button {
+  padding: 0.4rem 0.55rem;
+  font-size: 0.72rem;
+}
+
+.active-plan-tactical-edit {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.active-plan-tactical-edit > strong,
+.active-plan-tactical-edit > button {
+  grid-column: 1 / -1;
+}
+
+.active-plan-tactical-edit label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.active-plan-tactical-edit label span {
+  color: #8db7a7;
+  font-size: 0.68rem;
+}
+
+.active-plan-tactical-edit input {
+  min-width: 0;
+  width: 100%;
+  padding: 0.45rem;
+  border: 1px solid #365d53;
+  border-radius: 0.35rem;
+  color: #e8f7ef;
+  background: #071411;
+  font: inherit;
+}
+
+@media (max-width: 440px) {
+  .active-plan-tactical-edit {
+    grid-template-columns: 1fr;
+  }
+}

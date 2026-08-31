@@ -4,6 +4,16 @@ import { describe, expect, it } from "vitest";
 import { App } from "./App";
 import { createFlowControlApplication, type TowerSnapshot } from "./application";
 
+function configuredSnapshot(
+  operatingPosture: "observe" | "assist" | "take-the-sector" = "observe",
+) {
+  const application = createFlowControlApplication({
+    scenarioSeed: `app-test-${operatingPosture}`,
+    operatingPosture,
+  });
+  return application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+}
+
 describe("WebMCP preflight", () => {
   it("renders a selected aircraft from the authoritative snapshot in the radar and its contextual panel", () => {
     const application = createFlowControlApplication({
@@ -24,6 +34,8 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Selected Aircraft");
     expect(page).toContain("3,000 ft");
     expect(page).toContain("180 kt");
+    expect(page).toContain("<summary>Operational panel</summary>");
+    expect(page).toContain('<details class="operational-panel-shell" open="">');
   });
 
   it("exposes every aircraft as a keyboard-reachable radar selection target", () => {
@@ -116,7 +128,7 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("departure-and-arrival");
     expect(page).toContain("Routine");
     expect(page).toContain("FLOW 101 · cleared for takeoff runway 09");
-    expect(page).toContain("FLOW 202 · heading 120 · altitude 3,000 ft · speed 170 kt");
+    expect(page).toContain("FLOW 202 · Tactical Instruction");
     expect(page).toContain("Expires at 00:30");
   });
 
@@ -160,6 +172,56 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Approve &amp; dispatch Recovery Plan");
   });
 
+  it("renders Clearance Plan member selection and partial-dispatch controls from current state", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-3-partial-dispatch",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "two-holds",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: { kind: "hold-short", runwayId: "09-27", runwayEnd: "09" },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: { kind: "hold-short", runwayId: "09-27", runwayEnd: "09" },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+    application.command({
+      type: "set-clearance-plan-member-selection",
+      actor: "supervising-controller",
+      memberId: "two-holds:runway-clearance:2",
+      selected: false,
+      expectedStateVersion: 2,
+    });
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+
+    const page = renderToStaticMarkup(
+      <App
+        webMcpAvailable
+        snapshot={snapshot}
+        onSetClearancePlanMemberSelected={() => undefined}
+        onDispatchSelectedClearancePlan={() => undefined}
+      />,
+    );
+
+    expect(page).toContain('aria-label="Include FLOW 101 hold short runway 09" checked=""');
+    expect(page).toContain('aria-label="Include FLOW 404 hold short runway 09"');
+    expect(page).not.toContain('aria-label="Include FLOW 404 hold short runway 09" checked=""');
+    expect(page).toContain("Dispatch 1 selected item");
+  });
+
   it("blocks the Shift and explains how to reopen an unsupported browser", () => {
     const page = renderToStaticMarkup(<App webMcpAvailable={false} />);
 
@@ -170,7 +232,9 @@ describe("WebMCP preflight", () => {
   });
 
   it("shows an armed Observe Shift without starting operational time", () => {
-    const page = renderToStaticMarkup(<App webMcpAvailable />);
+    const page = renderToStaticMarkup(
+      <App webMcpAvailable snapshot={configuredSnapshot()} />,
+    );
 
     expect(page).toContain("Shift armed");
     expect(page).toContain("Observe");
@@ -180,7 +244,12 @@ describe("WebMCP preflight", () => {
 
   it("shows the active State Version after the Tower Agent connects", () => {
     const page = renderToStaticMarkup(
-      <App webMcpAvailable shiftStatus="active" stateVersion={1} />,
+      <App
+        webMcpAvailable
+        snapshot={configuredSnapshot()}
+        shiftStatus="active"
+        stateVersion={1}
+      />,
     );
 
     expect(page).toContain("Tower Agent connected");
@@ -192,6 +261,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot("take-the-sector")}
         shiftStatus="active"
         stateVersion={1}
         operatingPosture="take-the-sector"
@@ -207,6 +277,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot()}
         shiftStatus="active"
         stateVersion={2}
         operatingPosture="observe"
@@ -221,6 +292,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot()}
         shiftStatus="active"
         stateVersion={3}
         operatingPosture="observe"
@@ -239,6 +311,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot()}
         shiftStatus="active"
         stateVersion={1}
         connectionHealth="warning"
@@ -253,6 +326,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot()}
         shiftStatus="active"
         stateVersion={1}
         connectionHealth="unavailable"
@@ -268,6 +342,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot()}
         shiftStatus="active"
         stateVersion={1}
         connectionHealth="reconnected"
@@ -283,6 +358,7 @@ describe("WebMCP preflight", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
+        snapshot={configuredSnapshot("assist")}
         shiftStatus="active"
         stateVersion={2}
         operatingPosture="assist"

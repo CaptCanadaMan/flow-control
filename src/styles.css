@@ -108,6 +108,23 @@ section + section {
   margin-top: 1rem;
 }
 
+.startup-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.startup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: center;
+}
+
+.startup-actions p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
 .operating-canvas {
   display: grid;
   grid-column: 1 / -1;
@@ -116,64 +133,22 @@ section + section {
   padding: clamp(0.8rem, 2vw, 1.25rem);
 }
 
-.radar {
-  display: block;
-  width: min(100%, 46rem);
-  aspect-ratio: 1;
-  justify-self: center;
-  border: 1px solid #31584e;
-  border-radius: 0.65rem;
-  background:
-    radial-gradient(circle, rgb(24 75 63 / 36%), transparent 65%),
-    #06110f;
+.operating-canvas > .authority-strip {
+  grid-column: 1 / -1;
 }
 
-.radar-boundary,
-.radar-ring {
-  fill: none;
-  stroke: #31584e;
-  stroke-width: 0.3;
+.operational-panel-shell {
+  min-width: 0;
 }
 
-.radar-ring {
-  stroke: #1e4139;
-  stroke-dasharray: 1.2 1.2;
-}
-
-.runway {
-  stroke: #a8c7bb;
-  stroke-width: 0.8;
-  stroke-linecap: round;
-}
-
-.aircraft circle {
-  fill: #81f0c1;
-}
-
-.aircraft {
+.operational-panel-shell > summary {
+  margin-bottom: 0.75rem;
+  color: #a7f3d0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   cursor: pointer;
-}
-
-.aircraft:focus {
-  outline: none;
-}
-
-.aircraft:focus-visible circle {
-  stroke: #fff1c9;
-  stroke-width: 0.65;
-}
-
-.aircraft text {
-  fill: #c9e6da;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 3px;
-  font-weight: 650;
-}
-
-.aircraft.selected circle {
-  fill: #f4cf7a;
-  stroke: #fff1c9;
-  stroke-width: 0.45;
 }
 
 .operational-panel {
@@ -220,6 +195,26 @@ section + section {
 .plan-members li {
   padding-left: 0.75rem;
   border-left: 2px solid #4b7569;
+}
+
+.plan-member-control {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.55rem;
+  align-items: start;
+  cursor: pointer;
+}
+
+.plan-member-control input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.05rem 0 0;
+  accent-color: #6ee7b7;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 code {
@@ -283,9 +278,5 @@ footer {
 @media (max-aspect-ratio: 1 / 1) {
   .operating-canvas {
     grid-template-columns: 1fr;
-  }
-
-  .radar {
-    width: min(100%, 38rem);
   }
 }

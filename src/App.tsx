@@ -1,52 +1,26 @@
 import type { OperatingPosture, TowerSnapshot } from "./application";
+import { ActivePlanView } from "./components/ActivePlanView";
+import { AuditPanel, type OperationalReceiptRecord } from "./components/AuditPanel";
+import {
+  ManualControls,
+  type ManualRunwayClearance,
+  type ManualTacticalInstruction,
+} from "./components/ManualControls";
+import { Radar } from "./components/Radar";
+import { SelectedAircraftView } from "./components/SelectedAircraftView";
+import {
+  AuthorityStrip,
+  StartupPanel,
+  type ShiftPace,
+} from "./components/StartupPanel";
+import { ShiftScorecard } from "./components/ShiftScorecard";
+import { TransmissionHistory } from "./components/TransmissionHistory";
 
 const POSTURE_LABELS: Record<OperatingPosture, string> = {
   observe: "Observe",
   assist: "Assist",
   "take-the-sector": "Take the Sector",
 };
-
-const PLAN_CLASSIFICATION_LABELS = {
-  routine: "Routine",
-  elevated: "Elevated",
-  "exceptional-recovery": "Exceptional Recovery",
-} as const;
-
-const CLEARANCE_LABELS = {
-  "hold-short": "hold short",
-  "line-up-and-wait": "line up and wait",
-  "cancel-runway-clearance": "cancel runway clearance",
-  "clear-for-takeoff": "cleared for takeoff",
-  "clear-to-land": "cleared to land",
-  "clear-touch-and-go": "cleared touch-and-go",
-  "go-around": "go around",
-} as const;
-
-function formatSimulationTime(simulationTimeMs: number) {
-  const totalSeconds = Math.floor(simulationTimeMs / 1_000);
-  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
-  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${seconds}`;
-}
-
-function tacticalInstructionSummary(instruction: {
-  headingDegrees?: number;
-  altitudeFeet?: number;
-  speedKnots?: number;
-}) {
-  const parts = [
-    instruction.headingDegrees === undefined
-      ? undefined
-      : `heading ${instruction.headingDegrees}`,
-    instruction.altitudeFeet === undefined
-      ? undefined
-      : `altitude ${instruction.altitudeFeet.toLocaleString()} ft`,
-    instruction.speedKnots === undefined
-      ? undefined
-      : `speed ${instruction.speedKnots} kt`,
-  ].filter((part): part is string => part !== undefined);
-  return parts.join(" · ");
-}
 
 export type ConnectionHealth =
   | "healthy"
@@ -57,9 +31,26 @@ export type ConnectionHealth =
 export function App({
   webMcpAvailable,
   snapshot,
+  screenName,
+  pace = 1.5,
+  initialOperatingPosture = "take-the-sector",
+  startupCopyStatus,
+  onScreenNameChange,
+  onPaceChange,
+  onInitialOperatingPostureChange,
+  onArmConfiguredShift,
+  onCopyKickoffPrompt,
   selectedAircraftId,
   onSelectAircraft,
   onApproveRecoveryPlan,
+  onSetClearancePlanMemberSelected,
+  onDispatchSelectedClearancePlan,
+  onSelectClearancePlanAlternative,
+  onEditClearancePlanTacticalInstruction,
+  onIssueManualRunwayClearance,
+  onIssueManualTacticalInstruction,
+  operationalReceipts = [],
+  onExportAudit,
   shiftStatus = "armed",
   stateVersion = 0,
   operatingPosture = "observe",
@@ -72,9 +63,19 @@ export function App({
   onConfirmTakeTheSector,
 }: {
   webMcpAvailable: boolean;
+  screenName?: string;
+  pace?: ShiftPace;
+  initialOperatingPosture?: OperatingPosture;
+  startupCopyStatus?: string;
+  onScreenNameChange?: (screenName: string) => void;
+  onPaceChange?: (pace: ShiftPace) => void;
+  onInitialOperatingPostureChange?: (posture: OperatingPosture) => void;
+  onArmConfiguredShift?: () => void;
+  onCopyKickoffPrompt?: (prompt: string) => void;
   snapshot?: Pick<
     TowerSnapshot,
     | "aircraft"
+    | "aircraftCapabilityProfiles"
     | "airport"
     | "weather"
     | "runwayResources"
@@ -82,10 +83,29 @@ export function App({
     | "simulationTimeMs"
     | "stagedClearancePlan"
     | "stagedRecoveryPlan"
+    | "transmissions"
+    | "shiftStatus"
   >;
   selectedAircraftId?: string;
   onSelectAircraft?: (aircraftId: string) => void;
   onApproveRecoveryPlan?: () => void;
+  onSetClearancePlanMemberSelected?: (memberId: string, selected: boolean) => void;
+  onDispatchSelectedClearancePlan?: () => void;
+  onSelectClearancePlanAlternative?: (memberId: string, alternativeId: string) => void;
+  onEditClearancePlanTacticalInstruction?: (
+    memberId: string,
+    changes: { headingDegrees?: number; altitudeFeet?: number; speedKnots?: number },
+  ) => void;
+  onIssueManualRunwayClearance?: (request: {
+    aircraftId: string;
+    clearance: ManualRunwayClearance;
+  }) => void;
+  onIssueManualTacticalInstruction?: (request: {
+    aircraftId: string;
+    instruction: ManualTacticalInstruction;
+  }) => void;
+  operationalReceipts?: readonly OperationalReceiptRecord[];
+  onExportAudit?: () => void;
   shiftStatus?: "armed" | "active";
   stateVersion?: number;
   operatingPosture?: OperatingPosture;
@@ -110,15 +130,47 @@ export function App({
     );
   }
 
-  const selectedAircraft = snapshot?.aircraft.find(
-    (aircraft) => aircraft.id === selectedAircraftId,
+  if (!snapshot) {
+    return (
+      <main>
+        <header>
+          <p>Flow Control · preflight</p>
+          <h1>Supervise autonomy from one shared live workspace.</h1>
+          <p>
+            Configure this Shift before the Tower Agent connects. The armed
+            application will use these choices as its authoritative initial state.
+          </p>
+        </header>
+        <div className="startup-shell">
+          <StartupPanel
+            screenName={screenName}
+            pace={pace}
+            operatingPosture={initialOperatingPosture}
+            onScreenNameChange={(value) => onScreenNameChange?.(value)}
+            onPaceChange={(value) => onPaceChange?.(value)}
+            onOperatingPostureChange={(value) =>
+              onInitialOperatingPostureChange?.(value)
+            }
+            onCopyKickoffPrompt={(prompt) => onCopyKickoffPrompt?.(prompt)}
+          />
+          <div className="startup-actions">
+            <button type="button" onClick={onArmConfiguredShift}>
+              Arm configured Shift
+            </button>
+            {startupCopyStatus ? <p role="status">{startupCopyStatus}</p> : null}
+          </div>
+        </div>
+        <footer>
+          Illustrative simulation only — not for operational air traffic control.
+        </footer>
+      </main>
+    );
+  }
+
+  const situationPosture = snapshot.operatingPosture;
+  const selectedAircraft = snapshot.aircraft.find(
+    ({ id }) => id === selectedAircraftId,
   );
-  const situationPosture = snapshot?.operatingPosture ?? operatingPosture;
-  const activePlan = snapshot?.stagedRecoveryPlan
-    ? { label: "Recovery Plan", plan: snapshot.stagedRecoveryPlan }
-    : snapshot?.stagedClearancePlan
-      ? { label: "Clearance Plan", plan: snapshot.stagedClearancePlan }
-      : undefined;
 
   return (
     <main>
@@ -133,61 +185,21 @@ export function App({
 
       {snapshot ? (
         <section className="operating-canvas" aria-label="Operating canvas">
-          <svg
-            className="radar"
-            viewBox="0 0 100 100"
-            role="img"
-            aria-label={`${snapshot.airport.name} radar scope`}
-          >
-            <circle className="radar-boundary" cx="50" cy="50" r="40" />
-            <circle className="radar-ring" cx="50" cy="50" r="20" />
-            {snapshot.airport.runways.map((runway) => {
-              const length = runway.role === "primary" ? 34 : 20;
-              const radians = (runway.headingDegrees * Math.PI) / 180;
-              const deltaX = Math.sin(radians) * length;
-              const deltaY = -Math.cos(radians) * length;
+          <AuthorityStrip
+            operatingPosture={situationPosture}
+            connectionHealth={connectionHealth}
+            stateVersion={stateVersion}
+            pendingOperatingPosture={pendingOperatingPosture}
+          />
+          <Radar
+            snapshot={snapshot}
+            selectedAircraftId={selectedAircraftId}
+            onSelectAircraft={onSelectAircraft}
+          />
 
-              return (
-                <line
-                  className="runway"
-                  key={runway.id}
-                  x1={50 - deltaX}
-                  y1={50 - deltaY}
-                  x2={50 + deltaX}
-                  y2={50 + deltaY}
-                />
-              );
-            })}
-            {snapshot.aircraft.map((aircraft) => {
-              const x = 50 + aircraft.position.eastNauticalMiles * 5;
-              const y = 50 - aircraft.position.northNauticalMiles * 5;
-              const isSelected = aircraft.id === selectedAircraftId;
-
-              return (
-                <g
-                  className={isSelected ? "aircraft selected" : "aircraft"}
-                  key={aircraft.id}
-                  aria-label={`${aircraft.callsign}, ${aircraft.flightPhase}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelectAircraft?.(aircraft.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelectAircraft?.(aircraft.id);
-                    }
-                  }}
-                >
-                  <circle cx={x} cy={y} r="1.65" />
-                  <text x={x + 2.6} y={y - 1.8}>
-                    {aircraft.callsign}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
-
-          <aside className="operational-panel" aria-label="Operational panel">
+          <details className="operational-panel-shell" open>
+            <summary>Operational panel</summary>
+            <aside className="operational-panel" aria-label="Operational panel">
             <section aria-labelledby="situation-heading">
               <p>Situation</p>
               <h2 id="situation-heading">{snapshot.aircraft.length} aircraft tracked</h2>
@@ -207,67 +219,31 @@ export function App({
                 </ul>
               )}
             </section>
-            <section aria-labelledby="selected-aircraft-heading">
-              <p>Selected Aircraft</p>
-              <h2 id="selected-aircraft-heading">
-                {selectedAircraft?.callsign ?? "No aircraft selected"}
-              </h2>
-              {selectedAircraft ? (
-                <p>
-                  {selectedAircraft.altitudeFeet.toLocaleString()} ft · {selectedAircraft.speedKnots} kt · {selectedAircraft.flightPhase}
-                </p>
-              ) : (
-                <p>Select an aircraft on the radar to inspect its operational context.</p>
-              )}
-            </section>
-            <section aria-labelledby="active-plan-heading">
-              <p>Active Plan</p>
-              <h2 id="active-plan-heading">
-                {activePlan ? activePlan.label : "No active plan"}
-              </h2>
-              {activePlan ? (
-                <>
-                  <p className="plan-summary">
-                    <strong>{activePlan.plan.reference}</strong> · {PLAN_CLASSIFICATION_LABELS[activePlan.plan.classification]}
-                  </p>
-                  <ul className="plan-members">
-                    {activePlan.plan.members
-                      .filter((member) => member.selected)
-                      .map((member) => {
-                        const aircraft = snapshot.aircraft.find(
-                          (candidate) => candidate.id === member.aircraftId,
-                        );
-                        return (
-                          <li key={member.id}>
-                            {aircraft?.callsign ?? member.aircraftId} · {CLEARANCE_LABELS[member.clearance.kind]} runway {member.clearance.runwayEnd}
-                          </li>
-                        );
-                      })}
-                    {activePlan.plan.tacticalMembers
-                      .filter((member) => member.selected)
-                      .map((member) => {
-                        const aircraft = snapshot.aircraft.find(
-                          (candidate) => candidate.id === member.aircraftId,
-                        );
-                        return (
-                          <li key={member.id}>
-                            {aircraft?.callsign ?? member.aircraftId} · {tacticalInstructionSummary(member.instruction)}
-                          </li>
-                        );
-                      })}
-                  </ul>
-                  <p>Expires at {formatSimulationTime(activePlan.plan.expiresAtSimulationTimeMs)}</p>
-                  {snapshot.stagedRecoveryPlan ? (
-                    <button type="button" onClick={onApproveRecoveryPlan}>
-                      Approve & dispatch Recovery Plan
-                    </button>
-                  ) : null}
-                </>
-              ) : (
-                <p>Staged plans will appear here for accountable review.</p>
-              )}
-            </section>
-          </aside>
+            <SelectedAircraftView
+              snapshot={snapshot}
+              selectedAircraftId={selectedAircraftId}
+            />
+            <ActivePlanView
+              snapshot={snapshot}
+              onSetMemberSelected={onSetClearancePlanMemberSelected}
+              onSelectAlternative={onSelectClearancePlanAlternative}
+              onEditTacticalInstruction={onEditClearancePlanTacticalInstruction}
+              onDispatchClearancePlan={onDispatchSelectedClearancePlan}
+              onApproveRecoveryPlan={onApproveRecoveryPlan}
+            />
+            {shiftStatus === "active" ? (
+              <ManualControls
+                selectedAircraft={selectedAircraft}
+                aircraft={snapshot.aircraft}
+                onIssueRunwayClearance={onIssueManualRunwayClearance}
+                onIssueTacticalInstruction={onIssueManualTacticalInstruction}
+              />
+            ) : null}
+            <TransmissionHistory snapshot={snapshot} />
+            <AuditPanel receipts={operationalReceipts} onExport={onExportAudit} />
+              <ShiftScorecard snapshot={snapshot} receipts={operationalReceipts} />
+            </aside>
+          </details>
         </section>
       ) : null}
 

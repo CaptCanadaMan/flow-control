@@ -1,0 +1,66 @@
+.manual-controls {
+  min-width: 0;
+}
+
+.manual-controls-unavailable {
+  color: #f4d999;
+  font-size: 0.85rem;
+}
+
+.manual-control-forms {
+  display: grid;
+  gap: 1rem;
+}
+
+.manual-control-forms form {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid #234039;
+}
+
+.manual-control-forms h3 {
+  margin: 0;
+  color: #d8f7eb;
+  font-size: 0.9rem;
+}
+
+.manual-control-forms label {
+  display: grid;
+  gap: 0.35rem;
+  color: #a8c7bb;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.manual-control-forms select,
+.manual-control-forms input {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #31584e;
+  border-radius: 0.4rem;
+  color: #e5f5ed;
+  background: #071512;
+  font: inherit;
+}
+
+.manual-control-forms select:focus-visible,
+.manual-control-forms input:focus-visible {
+  border-color: #6ee7b7;
+  outline: 2px solid rgb(110 231 183 / 30%);
+  outline-offset: 1px;
+}
+
+.manual-control-forms button:disabled {
+  border-color: #31584e;
+  color: #749187;
+  background: #10211d;
+  cursor: not-allowed;
+}
+
+.manual-control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.7rem;
+}
