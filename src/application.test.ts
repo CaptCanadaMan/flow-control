@@ -1233,6 +1233,66 @@ describe("Shift lifecycle", () => {
     );
   });
 
+  it("deselects one Clearance Plan member while retaining a revalidated safe subset", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-partial-selection",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "two-holds",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+
+    expect(
+      application.command({
+        type: "set-clearance-plan-member-selection",
+        actor: "supervising-controller",
+        memberId: "two-holds:runway-clearance:2",
+        selected: false,
+        expectedStateVersion: 2,
+      }),
+    ).toEqual({
+      status: "success",
+      stateVersion: 3,
+      summary:
+        "Clearance Plan member two-holds:runway-clearance:2 is deselected; the selected subset remains valid.",
+      nextAction: "await-plan-review",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlan: {
+        members: [
+          { id: "two-holds:runway-clearance:1", selected: true },
+          { id: "two-holds:runway-clearance:2", selected: false },
+        ],
+      },
+    });
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",
