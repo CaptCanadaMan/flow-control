@@ -481,7 +481,9 @@ type OperationalReceipt = {
     | "capability-synchronization-completed"
     | "category-override-updated"
     | "clearance-plan-staged"
-    | "recovery-plan-staged";
+    | "recovery-plan-staged"
+    | "clearance-plan-expired"
+    | "recovery-plan-expired";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
@@ -895,6 +897,32 @@ function advanceRunwayResources(state: ApplicationState) {
   }
   state.runwayResources = nextResources;
   return true;
+}
+
+function expireStagedPlans(state: ApplicationState) {
+  const expired: Array<
+    Extract<
+      OperationalReceipt["action"],
+      "clearance-plan-expired" | "recovery-plan-expired"
+    >
+  > = [];
+  if (
+    state.stagedClearancePlan &&
+    state.stagedClearancePlan.expiresAtSimulationTimeMs <=
+      state.simulationTimeMs
+  ) {
+    delete state.stagedClearancePlan;
+    delete state.stagedClearancePlanReference;
+    expired.push("clearance-plan-expired");
+  }
+  if (
+    state.stagedRecoveryPlan &&
+    state.stagedRecoveryPlan.expiresAtSimulationTimeMs <= state.simulationTimeMs
+  ) {
+    delete state.stagedRecoveryPlan;
+    expired.push("recovery-plan-expired");
+  }
+  return expired;
 }
 
 function evaluateRunwayClearanceSet(
@@ -1322,6 +1350,17 @@ export function createFlowControlApplication(options: {
             state.operationalReceipts.push({
               actor: "simulation-clock",
               action: "pilot-readback-received",
+              simulationTimeMs: state.simulationTimeMs,
+              stateVersionBefore,
+              stateVersionAfter: state.stateVersion,
+            });
+          }
+          for (const action of expireStagedPlans(state)) {
+            const stateVersionBefore = state.stateVersion;
+            state.stateVersion += 1;
+            state.operationalReceipts.push({
+              actor: "simulation-clock",
+              action,
               simulationTimeMs: state.simulationTimeMs,
               stateVersionBefore,
               stateVersionAfter: state.stateVersion,

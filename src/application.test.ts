@@ -1137,6 +1137,52 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("expires a staged Clearance Plan at its deterministic Plan Expiry", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-plan-expiry",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "short-lived-departure",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 300,
+    });
+
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlanReference: undefined,
+      stagedClearancePlan: undefined,
+    });
+    expect(application.query({ type: "operational-receipts" })).toContainEqual(
+      expect.objectContaining({
+        actor: "simulation-clock",
+        action: "clearance-plan-expired",
+        simulationTimeMs: 30_000,
+      }),
+    );
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",
