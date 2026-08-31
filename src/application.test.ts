@@ -831,7 +831,7 @@ describe("Shift lifecycle", () => {
       evaluatedStateVersion: 1,
       simulationTimeMs: 0,
       projectedSimulationTimeMs: 30_000,
-      affectedAircraft: ["fc-202", "fc-404"],
+      affectedAircraft: ["fc-202", "fc-404", "fc-101"],
       conflicts: [
         {
           kind: "intersection-occupied",
@@ -839,9 +839,67 @@ describe("Shift lifecycle", () => {
           aircraftIds: ["fc-202", "fc-404"],
         },
       ],
-      constraints: [],
+      constraints: [
+        {
+          kind: "wake-separation",
+          resourceId: "09-27",
+          leaderAircraftId: "fc-101",
+          followerAircraftId: "fc-404",
+          requiredSpacingMs: 5_000,
+          availableSpacingMs: 0,
+        },
+      ],
       mustIssueBySimulationTimeMs: 40_000,
       nextAction: "wait-for-runway-resource",
+    });
+  });
+
+  it("refuses an arrival sequenced too soon behind a heavy aircraft after runway occupancy clears", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-wake-separation",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: 1,
+        effectiveAtSimulationTimeMs: 200_000,
+        runwayClearances: [
+          {
+            aircraftId: "fc-202",
+            clearance: {
+              kind: "clear-to-land",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      status: "refusal",
+      valid: false,
+      evaluatedStateVersion: 1,
+      simulationTimeMs: 0,
+      projectedSimulationTimeMs: 200_000,
+      affectedAircraft: ["fc-505", "fc-202"],
+      conflicts: [],
+      constraints: [
+        {
+          kind: "wake-separation",
+          resourceId: "09-27",
+          leaderAircraftId: "fc-505",
+          followerAircraftId: "fc-202",
+          requiredSpacingMs: 20_000,
+          availableSpacingMs: 10_000,
+        },
+      ],
+      nextAction: "delay-for-wake-separation",
     });
   });
 

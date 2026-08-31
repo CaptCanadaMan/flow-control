@@ -653,6 +653,12 @@ const VFR_WEATHER_PRESETS: readonly StaticVfrWeather[] = [
   },
 ];
 
+const WAKE_SPACING_AFTER_MS = {
+  light: 5_000,
+  medium: 10_000,
+  heavy: 20_000,
+} as const;
+
 function createSeededRandom(scenarioSeed: string) {
   let state = 2_166_136_261;
   for (let index = 0; index < scenarioSeed.length; index += 1) {
@@ -860,6 +866,13 @@ function evaluateRunwayClearanceSet(
     resourceId: string;
     requiredMinimumRunway: { lengthFeet: number; widthFeet: number };
     availableRunway: { lengthFeet: number; widthFeet: number };
+  } | {
+    kind: "wake-separation";
+    resourceId: string;
+    leaderAircraftId: string;
+    followerAircraftId: string;
+    requiredSpacingMs: number;
+    availableSpacingMs: number;
   }> = [];
   const mustIssueBy: number[] = [];
   const projectedResources = runwayResourcesAt(
@@ -894,6 +907,39 @@ function evaluateRunwayClearanceSet(
           widthFeet: runway.widthFeet,
         },
       });
+    }
+
+    const precedingRunwayUse = INITIAL_AIRCRAFT_LIFECYCLES.flatMap(
+      (lifecycle) =>
+        lifecycle.runwayUse &&
+        lifecycle.runwayUse.runwayId === candidate.clearance.runwayId &&
+        lifecycle.aircraft.id !== candidate.aircraftId &&
+        lifecycle.runwayUse.clearsAtMs <= effectiveAtSimulationTimeMs
+          ? [lifecycle]
+          : [],
+    ).sort(
+      (first, second) =>
+        (second.runwayUse?.clearsAtMs ?? 0) -
+        (first.runwayUse?.clearsAtMs ?? 0),
+    )[0];
+    const leadingProfile = state.aircraftCapabilityProfiles.find(
+      ({ id }) => id === precedingRunwayUse?.aircraft.capabilityProfileId,
+    );
+    if (precedingRunwayUse?.runwayUse && leadingProfile) {
+      const availableSpacingMs =
+        effectiveAtSimulationTimeMs - precedingRunwayUse.runwayUse.clearsAtMs;
+      const requiredSpacingMs =
+        WAKE_SPACING_AFTER_MS[leadingProfile.wakeCategory];
+      if (availableSpacingMs < requiredSpacingMs) {
+        constraints.push({
+          kind: "wake-separation",
+          resourceId: candidate.clearance.runwayId,
+          leaderAircraftId: precedingRunwayUse.aircraft.id,
+          followerAircraftId: candidate.aircraftId,
+          requiredSpacingMs,
+          availableSpacingMs,
+        });
+      }
     }
 
     const occupiedRunway = projectedResources.runwayOccupancy.filter(
@@ -944,7 +990,11 @@ function evaluateRunwayClearanceSet(
   const affectedAircraft = [
     ...new Set([
       ...conflicts.flatMap(({ aircraftIds }) => aircraftIds),
-      ...constraints.map(({ aircraftId }) => aircraftId),
+      ...constraints.flatMap((constraint) =>
+        constraint.kind === "runway-capability"
+          ? [constraint.aircraftId]
+          : [constraint.leaderAircraftId, constraint.followerAircraftId],
+      ),
     ]),
   ];
   if (conflicts.length === 0 && constraints.length === 0) {
@@ -980,7 +1030,9 @@ function evaluateRunwayClearanceSet(
     nextAction:
       conflicts.length > 0
         ? ("wait-for-runway-resource" as const)
-        : ("select-suitable-runway" as const),
+        : constraints.some(({ kind }) => kind === "wake-separation")
+          ? ("delay-for-wake-separation" as const)
+          : ("select-suitable-runway" as const),
   };
 }
 
