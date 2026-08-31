@@ -798,6 +798,44 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-policy-hard-invariant",
+      operatingPosture: "take-the-sector",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const result = application.command({
+      type: "issue-runway-clearance",
+      actor: "tower-agent",
+      aircraftId: "fc-505",
+      clearance: {
+        kind: "clear-to-land",
+        runwayId: "04-22",
+        runwayEnd: "22",
+      },
+      expectedStateVersion: 1,
+    });
+
+    expect(result).toEqual({
+      status: "refusal",
+      stateVersion: 1,
+      summary: "Runway Clearance refused by policy.",
+      rationale:
+        "Runway 04-22 cannot satisfy FLOW 505 minimum runway capability.",
+      nextAction: "select-suitable-runway",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stateVersion: 1,
+      transmissions: [],
+    });
+    expect(application.query({ type: "operational-receipts" })).toHaveLength(1);
+  });
+
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
     vi.useFakeTimers();
     const application = createFlowControlApplication({

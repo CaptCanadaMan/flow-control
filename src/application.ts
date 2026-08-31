@@ -1235,6 +1235,26 @@ export function createFlowControlApplication(options: {
           };
         }
 
+        const evaluation = evaluateRunwayClearanceSet(state, [
+          {
+            aircraftId: aircraft.id,
+            clearance: command.clearance,
+          },
+        ]);
+        if (!evaluation.valid) {
+          const constraint = evaluation.constraints[0];
+          const conflict = evaluation.conflicts[0];
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Runway Clearance refused by policy.",
+            rationale: constraint
+              ? `Runway ${constraint.resourceId} cannot satisfy ${aircraft.callsign} minimum runway capability.`
+              : `Runway resource ${conflict.resourceId} is occupied.`,
+            nextAction: evaluation.nextAction,
+          };
+        }
+
         const text = runwayClearanceText(aircraft.callsign, command.clearance);
         state.aircraft = state.aircraft.map((candidate) =>
           candidate.id === aircraft.id
