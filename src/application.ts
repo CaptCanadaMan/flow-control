@@ -176,6 +176,157 @@ const AIRCRAFT_CAPABILITY_PROFILES = [
 ] as const;
 
 type AircraftCapabilityProfiles = typeof AIRCRAFT_CAPABILITY_PROFILES;
+type AircraftCapabilityProfileId = AircraftCapabilityProfiles[number]["id"];
+
+type AircraftFlightPhase =
+  | "hold-short"
+  | "inbound"
+  | "approach"
+  | "circuit"
+  | "departure"
+  | "out-of-play";
+
+type PilotState = "ready" | "awaiting-contact" | "monitoring" | "operating" | "complete";
+
+type Aircraft = {
+  id: string;
+  callsign: string;
+  capabilityProfileId: AircraftCapabilityProfileId;
+  position: { eastNauticalMiles: number; northNauticalMiles: number };
+  trackDegrees: number;
+  headingDegrees: number;
+  altitudeFeet: number;
+  speedKnots: number;
+  flightPhase: AircraftFlightPhase;
+  intention: "departure" | "arrival" | "circuit";
+  pilotState: PilotState;
+  exit?: "departed" | "landed";
+};
+
+type AircraftLifecycle = {
+  operatingAtMs: number;
+  completeAtMs: number;
+  operatingFlightPhase: Extract<AircraftFlightPhase, "approach" | "circuit" | "departure">;
+  exit: "departed" | "landed";
+  aircraft: Aircraft;
+};
+
+const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
+  {
+    operatingAtMs: 10_000,
+    completeAtMs: 60_000,
+    operatingFlightPhase: "departure",
+    exit: "departed",
+    aircraft: {
+      id: "fc-101",
+      callsign: "FLOW 101",
+      capabilityProfileId: "cessna-172",
+      position: { eastNauticalMiles: -0.95, northNauticalMiles: 0 },
+      trackDegrees: 90,
+      headingDegrees: 90,
+      altitudeFeet: 0,
+      speedKnots: 0,
+      flightPhase: "hold-short",
+      intention: "departure",
+      pilotState: "ready",
+    },
+  },
+  {
+    operatingAtMs: 20_000,
+    completeAtMs: 90_000,
+    operatingFlightPhase: "approach",
+    exit: "landed",
+    aircraft: {
+      id: "fc-202",
+      callsign: "FLOW 202",
+      capabilityProfileId: "king-air-350",
+      position: { eastNauticalMiles: -6, northNauticalMiles: 0 },
+      trackDegrees: 90,
+      headingDegrees: 90,
+      altitudeFeet: 3_000,
+      speedKnots: 180,
+      flightPhase: "inbound",
+      intention: "arrival",
+      pilotState: "awaiting-contact",
+    },
+  },
+  {
+    operatingAtMs: 30_000,
+    completeAtMs: 120_000,
+    operatingFlightPhase: "approach",
+    exit: "landed",
+    aircraft: {
+      id: "fc-303",
+      callsign: "FLOW 303",
+      capabilityProfileId: "atr-72-600",
+      position: { eastNauticalMiles: 0, northNauticalMiles: 6 },
+      trackDegrees: 180,
+      headingDegrees: 180,
+      altitudeFeet: 3_500,
+      speedKnots: 190,
+      flightPhase: "inbound",
+      intention: "arrival",
+      pilotState: "awaiting-contact",
+    },
+  },
+  {
+    operatingAtMs: 40_000,
+    completeAtMs: 150_000,
+    operatingFlightPhase: "departure",
+    exit: "departed",
+    aircraft: {
+      id: "fc-404",
+      callsign: "FLOW 404",
+      capabilityProfileId: "boeing-737-8",
+      position: { eastNauticalMiles: 0.95, northNauticalMiles: 0 },
+      trackDegrees: 270,
+      headingDegrees: 270,
+      altitudeFeet: 0,
+      speedKnots: 0,
+      flightPhase: "hold-short",
+      intention: "departure",
+      pilotState: "ready",
+    },
+  },
+  {
+    operatingAtMs: 50_000,
+    completeAtMs: 180_000,
+    operatingFlightPhase: "approach",
+    exit: "landed",
+    aircraft: {
+      id: "fc-505",
+      callsign: "FLOW 505",
+      capabilityProfileId: "airbus-a330-900",
+      position: { eastNauticalMiles: 0, northNauticalMiles: -6 },
+      trackDegrees: 0,
+      headingDegrees: 0,
+      altitudeFeet: 4_000,
+      speedKnots: 210,
+      flightPhase: "inbound",
+      intention: "arrival",
+      pilotState: "awaiting-contact",
+    },
+  },
+  {
+    operatingAtMs: 60_000,
+    completeAtMs: 210_000,
+    operatingFlightPhase: "circuit",
+    exit: "landed",
+    aircraft: {
+      id: "fc-106",
+      callsign: "FLOW 106",
+      capabilityProfileId: "cessna-172",
+      position: { eastNauticalMiles: 1, northNauticalMiles: 1.5 },
+      trackDegrees: 270,
+      headingDegrees: 270,
+      altitudeFeet: 1_000,
+      speedKnots: 90,
+      flightPhase: "circuit",
+      intention: "circuit",
+      pilotState: "monitoring",
+    },
+  },
+];
 
 type Capability =
   | "begin_tower_shift"
@@ -190,9 +341,14 @@ type Capability =
   | "issue_tactical_instruction";
 
 type OperationalReceipt = {
-  actor: "tower-agent" | "supervising-controller" | "capability-registry";
+  actor:
+    | "tower-agent"
+    | "supervising-controller"
+    | "capability-registry"
+    | "simulation-clock";
   action:
     | "shift-began"
+    | "aircraft-state-transition"
     | "operating-posture-reduced"
     | "operating-posture-increase-requested"
     | "operating-posture-increase-confirmed"
@@ -208,6 +364,7 @@ type ApplicationState = {
   weather: StaticVfrWeather;
   airport: AirportGeometry;
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
+  aircraft: Aircraft[];
   operatingPosture: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
@@ -226,6 +383,7 @@ export type TowerSnapshot = Pick<
   weather: StaticVfrWeather;
   airport: AirportGeometry;
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
+  aircraft: Aircraft[];
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -297,6 +455,7 @@ type StageClearancePlanCommand = {
 type AdvanceSimulationCommand = {
   type: "advance-simulation";
   actor: "simulation-clock";
+  steps?: number;
 };
 
 type Command =
@@ -385,7 +544,47 @@ function generateScenario(scenarioSeed: string) {
     weather: selectStaticVfrWeather(random),
     airport: structuredClone(FLOW_FIELD_GEOMETRY),
     aircraftCapabilityProfiles: structuredClone(AIRCRAFT_CAPABILITY_PROFILES),
+    aircraft: structuredClone(
+      INITIAL_AIRCRAFT_LIFECYCLES.map(({ aircraft }) => aircraft),
+    ),
   };
+}
+
+function advanceAircraftState(state: ApplicationState) {
+  const transitionedCallsigns: string[] = [];
+  state.aircraft = state.aircraft.map((aircraft) => {
+    const lifecycle = INITIAL_AIRCRAFT_LIFECYCLES.find(
+      ({ aircraft: initialAircraft }) => initialAircraft.id === aircraft.id,
+    );
+    if (!lifecycle || aircraft.flightPhase === "out-of-play") {
+      return aircraft;
+    }
+
+    if (state.simulationTimeMs >= lifecycle.completeAtMs) {
+      transitionedCallsigns.push(aircraft.callsign);
+      return {
+        ...aircraft,
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: lifecycle.exit,
+      };
+    }
+
+    if (
+      state.simulationTimeMs >= lifecycle.operatingAtMs &&
+      aircraft.pilotState !== "operating"
+    ) {
+      transitionedCallsigns.push(aircraft.callsign);
+      return {
+        ...aircraft,
+        flightPhase: lifecycle.operatingFlightPhase,
+        pilotState: "operating",
+      };
+    }
+
+    return aircraft;
+  });
+  return transitionedCallsigns;
 }
 
 function activeCapabilities(posture: OperatingPosture): Capability[] {
@@ -456,6 +655,7 @@ export function createFlowControlApplication(options: {
       weather: { ...state.weather },
       airport: structuredClone(state.airport),
       aircraftCapabilityProfiles: structuredClone(state.aircraftCapabilityProfiles),
+      aircraft: structuredClone(state.aircraft),
       operatingPosture: state.operatingPosture,
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,
@@ -528,8 +728,31 @@ export function createFlowControlApplication(options: {
           };
         }
 
-        state.simulationTimeMs +=
-          simulation.fixedTimeStepMs * simulation.paceMultiplier;
+        const steps = command.steps ?? 1;
+        if (!Number.isInteger(steps) || steps < 1) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Simulation advance requires at least one whole timestep.",
+            nextAction: "continue" as const,
+          };
+        }
+
+        for (let step = 0; step < steps; step += 1) {
+          state.simulationTimeMs +=
+            simulation.fixedTimeStepMs * simulation.paceMultiplier;
+          for (const callsign of advanceAircraftState(state)) {
+            const stateVersionBefore = state.stateVersion;
+            state.stateVersion += 1;
+            state.operationalReceipts.push({
+              actor: command.actor,
+              action: "aircraft-state-transition",
+              simulationTimeMs: state.simulationTimeMs,
+              stateVersionBefore,
+              stateVersionAfter: state.stateVersion,
+            });
+          }
+        }
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
 

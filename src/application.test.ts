@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createFlowControlApplication } from "./application";
+import {
+  createFlowControlApplication,
+  type TowerSnapshot,
+} from "./application";
 
 const EXPECTED_AIRPORT_GEOMETRY = {
   id: "FLOW",
@@ -267,6 +270,7 @@ describe("Shift lifecycle", () => {
         },
         airport: EXPECTED_AIRPORT_GEOMETRY,
         aircraftCapabilityProfiles: EXPECTED_AIRCRAFT_CAPABILITY_PROFILES,
+        aircraft: expect.any(Array),
       },
       receipts: [
         {
@@ -330,6 +334,149 @@ describe("Shift lifecycle", () => {
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
       aircraftCapabilityProfiles: EXPECTED_AIRCRAFT_CAPABILITY_PROFILES,
     });
+  });
+
+  it("advances a seeded roster through deterministic aircraft and Pilot states", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-1-aircraft-lifecycle",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const initialSnapshot = application.query({
+      type: "tower-snapshot",
+    }) as TowerSnapshot;
+    expect(
+      initialSnapshot.aircraft.map(
+        ({ callsign, capabilityProfileId, flightPhase, pilotState }) => ({
+          callsign,
+          capabilityProfileId,
+          flightPhase,
+          pilotState,
+        }),
+      ),
+    ).toEqual([
+      {
+        callsign: "FLOW 101",
+        capabilityProfileId: "cessna-172",
+        flightPhase: "hold-short",
+        pilotState: "ready",
+      },
+      {
+        callsign: "FLOW 202",
+        capabilityProfileId: "king-air-350",
+        flightPhase: "inbound",
+        pilotState: "awaiting-contact",
+      },
+      {
+        callsign: "FLOW 303",
+        capabilityProfileId: "atr-72-600",
+        flightPhase: "inbound",
+        pilotState: "awaiting-contact",
+      },
+      {
+        callsign: "FLOW 404",
+        capabilityProfileId: "boeing-737-8",
+        flightPhase: "hold-short",
+        pilotState: "ready",
+      },
+      {
+        callsign: "FLOW 505",
+        capabilityProfileId: "airbus-a330-900",
+        flightPhase: "inbound",
+        pilotState: "awaiting-contact",
+      },
+      {
+        callsign: "FLOW 106",
+        capabilityProfileId: "cessna-172",
+        flightPhase: "circuit",
+        pilotState: "monitoring",
+      },
+    ]);
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 100,
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft[0],
+    ).toMatchObject({
+      callsign: "FLOW 101",
+      flightPhase: "departure",
+      pilotState: "operating",
+    });
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 2_000,
+    });
+    const completedSnapshot = application.query({
+      type: "tower-snapshot",
+    }) as TowerSnapshot;
+    expect(completedSnapshot.simulationTimeMs).toBe(210_000);
+    expect(
+      completedSnapshot.aircraft.map(
+        ({ callsign, flightPhase, pilotState, exit }) => ({
+          callsign,
+          flightPhase,
+          pilotState,
+          exit,
+        }),
+      ),
+    ).toEqual([
+      {
+        callsign: "FLOW 101",
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "departed",
+      },
+      {
+        callsign: "FLOW 202",
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "landed",
+      },
+      {
+        callsign: "FLOW 303",
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "landed",
+      },
+      {
+        callsign: "FLOW 404",
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "departed",
+      },
+      {
+        callsign: "FLOW 505",
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "landed",
+      },
+      {
+        callsign: "FLOW 106",
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "landed",
+      },
+    ]);
+    expect(
+      (
+        application.query({ type: "operational-receipts" }) as Array<{
+          action: string;
+        }>
+      )
+        .filter(
+          (receipt) => receipt.action === "aircraft-state-transition",
+        ),
+    ).toHaveLength(12);
   });
 
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
