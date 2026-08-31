@@ -728,6 +728,7 @@ describe("Shift lifecycle", () => {
       valid: false,
       evaluatedStateVersion: 3,
       simulationTimeMs: 10_000,
+      classification: "routine",
       affectedAircraft: ["fc-101", "fc-404"],
       conflicts: [
         {
@@ -783,6 +784,7 @@ describe("Shift lifecycle", () => {
       valid: false,
       evaluatedStateVersion: 1,
       simulationTimeMs: 0,
+      classification: "routine",
       affectedAircraft: ["fc-505"],
       conflicts: [],
       constraints: [
@@ -831,6 +833,7 @@ describe("Shift lifecycle", () => {
       evaluatedStateVersion: 1,
       simulationTimeMs: 0,
       projectedSimulationTimeMs: 30_000,
+      classification: "routine",
       affectedAircraft: ["fc-202", "fc-404", "fc-101"],
       conflicts: [
         {
@@ -887,6 +890,7 @@ describe("Shift lifecycle", () => {
       evaluatedStateVersion: 1,
       simulationTimeMs: 0,
       projectedSimulationTimeMs: 200_000,
+      classification: "routine",
       affectedAircraft: ["fc-505", "fc-202"],
       conflicts: [],
       constraints: [
@@ -901,6 +905,77 @@ describe("Shift lifecycle", () => {
       ],
       nextAction: "delay-for-wake-separation",
     });
+  });
+
+  it("classifies routine work, Immediate Protection, and a multi-aircraft recovery deterministically", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-action-classification",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const evaluate = (runwayClearances: Array<{
+      aircraftId: string;
+      clearance: {
+        kind: "clear-for-takeoff" | "go-around" | "hold-short";
+        runwayId: "09-27" | "04-22";
+        runwayEnd: "09" | "27" | "04" | "22";
+      };
+    }>) =>
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: 1,
+        runwayClearances,
+      });
+
+    expect(
+      evaluate([
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ]),
+    ).toMatchObject({ valid: true, classification: "routine" });
+    expect(
+      evaluate([
+        {
+          aircraftId: "fc-202",
+          clearance: {
+            kind: "go-around",
+            runwayId: "04-22",
+            runwayEnd: "22",
+          },
+        },
+      ]),
+    ).toMatchObject({ valid: true, classification: "elevated" });
+    expect(
+      evaluate([
+        {
+          aircraftId: "fc-202",
+          clearance: {
+            kind: "go-around",
+            runwayId: "04-22",
+            runwayEnd: "22",
+          },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ]),
+    ).toMatchObject({ valid: true, classification: "exceptional-recovery" });
   });
 
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {

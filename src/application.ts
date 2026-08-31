@@ -198,6 +198,11 @@ type CandidateRunwayClearance = {
   clearance: RunwayClearance;
 };
 
+type ActionClassification =
+  | "routine"
+  | "elevated"
+  | "exceptional-recovery";
+
 type TacticalInstruction = {
   headingDegrees?: number;
   altitudeFeet?: number;
@@ -855,6 +860,13 @@ function evaluateRunwayClearanceSet(
   runwayClearances: CandidateRunwayClearance[],
   effectiveAtSimulationTimeMs = state.simulationTimeMs,
 ) {
+  const classification: ActionClassification = runwayClearances.some(
+    ({ clearance }) => clearance.kind === "go-around",
+  )
+    ? runwayClearances.length > 1
+      ? "exceptional-recovery"
+      : "elevated"
+    : "routine";
   const conflicts: Array<{
     kind: "runway-occupied" | "intersection-occupied";
     resourceId: string;
@@ -1009,6 +1021,7 @@ function evaluateRunwayClearanceSet(
       affectedAircraft,
       conflicts,
       constraints,
+      classification,
       nextAction: "continue" as const,
     };
   }
@@ -1024,6 +1037,7 @@ function evaluateRunwayClearanceSet(
     affectedAircraft,
     conflicts,
     constraints,
+    classification,
     ...(mustIssueBy.length > 0
       ? { mustIssueBySimulationTimeMs: Math.min(...mustIssueBy) }
       : {}),
