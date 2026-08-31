@@ -1223,6 +1223,20 @@ export function createFlowControlApplication(options: {
       }
 
       if (command.type === "issue-runway-clearance") {
+        if (
+          command.actor === "tower-agent" &&
+          state.operatingPosture !== "take-the-sector"
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Runway Clearance requires Take the Sector.",
+            rationale:
+              `${POSTURE_LABELS[state.operatingPosture]} does not delegate runway Clearance dispatch to the Tower Agent.`,
+            nextAction: "request-authority-increase" as const,
+          };
+        }
+
         const aircraft = state.aircraft.find(
           ({ id }) => id === command.aircraftId,
         );

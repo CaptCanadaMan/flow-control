@@ -836,6 +836,43 @@ describe("Shift lifecycle", () => {
     expect(application.query({ type: "operational-receipts" })).toHaveLength(1);
   });
 
+  it("refuses a cached Tower Agent runway Clearance in Observe while preserving manual takeover", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-observe-policy",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.command({
+        type: "issue-runway-clearance",
+        actor: "tower-agent",
+        aircraftId: "fc-101",
+        clearance: {
+          kind: "clear-for-takeoff",
+          runwayId: "09-27",
+          runwayEnd: "09",
+        },
+        expectedStateVersion: 1,
+      }),
+    ).toEqual({
+      status: "refusal",
+      stateVersion: 1,
+      summary: "Runway Clearance requires Take the Sector.",
+      rationale:
+        "Observe does not delegate runway Clearance dispatch to the Tower Agent.",
+      nextAction: "request-authority-increase",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stateVersion: 1,
+      transmissions: [],
+    });
+  });
+
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
     vi.useFakeTimers();
     const application = createFlowControlApplication({
