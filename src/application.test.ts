@@ -1568,6 +1568,235 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("passes the Phase 2 policy and planning gate at the application boundary", () => {
+    const protectedOperations = createFlowControlApplication({
+      scenarioSeed: "phase-2-gate-protection",
+      operatingPosture: "take-the-sector",
+    });
+    protectedOperations.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      protectedOperations.command({
+        type: "issue-runway-clearance",
+        actor: "tower-agent",
+        aircraftId: "fc-505",
+        clearance: {
+          kind: "clear-to-land",
+          runwayId: "04-22",
+          runwayEnd: "22",
+        },
+        expectedStateVersion: 1,
+      }),
+    ).toMatchObject({ status: "refusal", stateVersion: 1 });
+    expect(protectedOperations.query({ type: "tower-snapshot" })).toMatchObject({
+      transmissions: [],
+    });
+    expect(
+      protectedOperations.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: 1,
+        runwayClearances: [
+          {
+            aircraftId: "fc-202",
+            clearance: {
+              kind: "go-around",
+              runwayId: "04-22",
+              runwayEnd: "22",
+            },
+          },
+        ],
+      }),
+    ).toMatchObject({ valid: true, classification: "elevated" });
+    expect(
+      protectedOperations.command({
+        type: "issue-runway-clearance",
+        actor: "tower-agent",
+        aircraftId: "fc-202",
+        clearance: {
+          kind: "go-around",
+          runwayId: "04-22",
+          runwayEnd: "22",
+        },
+        expectedStateVersion: 1,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 2 });
+
+    const recovery = createFlowControlApplication({
+      scenarioSeed: "phase-2-gate-recovery",
+      operatingPosture: "assist",
+    });
+    recovery.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    expect(
+      recovery.command({
+        type: "stage-recovery-plan",
+        actor: "tower-agent",
+        planReference: "go-around-recovery",
+        runwayClearances: [
+          {
+            aircraftId: "fc-202",
+            clearance: {
+              kind: "go-around",
+              runwayId: "04-22",
+              runwayEnd: "22",
+            },
+          },
+          {
+            aircraftId: "fc-404",
+            clearance: {
+              kind: "hold-short",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+        expectedStateVersion: 1,
+      }),
+    ).toMatchObject({ status: "approval-required", stateVersion: 2 });
+    expect(recovery.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedRecoveryPlan: expect.objectContaining({
+        reference: "go-around-recovery",
+      }),
+      transmissions: [],
+    });
+    expect(
+      recovery.command({
+        type: "approve-recovery-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: 2,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 3 });
+
+    const partialDispatch = createFlowControlApplication({
+      scenarioSeed: "phase-2-gate-partial-dispatch",
+      operatingPosture: "assist",
+    });
+    partialDispatch.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    partialDispatch.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "two-holds",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: { kind: "hold-short", runwayId: "09-27", runwayEnd: "09" },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: { kind: "hold-short", runwayId: "09-27", runwayEnd: "09" },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+    partialDispatch.command({
+      type: "set-clearance-plan-member-selection",
+      actor: "supervising-controller",
+      memberId: "two-holds:runway-clearance:2",
+      selected: false,
+      expectedStateVersion: 2,
+    });
+    expect(
+      partialDispatch.command({
+        type: "dispatch-selected-clearance-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: 3,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 4 });
+    expect(partialDispatch.query({ type: "tower-snapshot" })).toMatchObject({
+      transmissions: [
+        expect.objectContaining({ aircraftId: "fc-101" }),
+      ],
+    });
+    expect(
+      (partialDispatch.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft.find(
+        ({ id }) => id === "fc-404",
+      ),
+    ).not.toHaveProperty("activeRunwayClearance");
+
+    const replanning = createFlowControlApplication({
+      scenarioSeed: "phase-2-gate-replanning",
+      operatingPosture: "assist",
+    });
+    replanning.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    replanning.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "departure-101",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+    replanning.command({
+      type: "issue-tactical-instruction",
+      actor: "supervising-controller",
+      aircraftId: "fc-202",
+      instruction: { headingDegrees: 120 },
+      expectedStateVersion: 2,
+    });
+    expect(replanning.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlan: undefined,
+    });
+    expect(
+      replanning.command({
+        type: "dispatch-selected-clearance-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: 2,
+      }),
+    ).toMatchObject({
+      status: "stale",
+      stateVersion: 4,
+      summary:
+        "Clearance Plan dispatch refused because the expected State Version is stale.",
+    });
+    expect(
+      replanning.command({
+        type: "stage-clearance-plan",
+        actor: "tower-agent",
+        planReference: "recalculated-departure-101",
+        runwayClearances: [
+          {
+            aircraftId: "fc-101",
+            clearance: {
+              kind: "clear-for-takeoff",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+        expectedStateVersion: 4,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 5 });
+    expect(replanning.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlan: {
+        reference: "recalculated-departure-101",
+        evaluatedStateVersion: 4,
+      },
+    });
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",

@@ -1531,7 +1531,9 @@ export function createFlowControlApplication(options: {
           status: "stale" as const,
           stateVersion: state.stateVersion,
           summary:
-            "Shift start refused because the expected State Version is stale.",
+            command.type === "dispatch-selected-clearance-plan"
+              ? "Clearance Plan dispatch refused because the expected State Version is stale."
+              : "Shift start refused because the expected State Version is stale.",
           rationale: `Expected State Version ${command.expectedStateVersion}; current State Version is ${state.stateVersion}.`,
           nextAction: "get_tower_snapshot" as const,
         };
