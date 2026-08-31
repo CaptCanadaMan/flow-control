@@ -29,7 +29,10 @@ export function App({
   onConfirmTakeTheSector,
 }: {
   webMcpAvailable: boolean;
-  snapshot?: Pick<TowerSnapshot, "aircraft" | "airport">;
+  snapshot?: Pick<
+    TowerSnapshot,
+    "aircraft" | "airport" | "weather" | "runwayResources" | "operatingPosture"
+  >;
   selectedAircraftId?: string;
   onSelectAircraft?: (aircraftId: string) => void;
   shiftStatus?: "armed" | "active";
@@ -59,6 +62,7 @@ export function App({
   const selectedAircraft = snapshot?.aircraft.find(
     (aircraft) => aircraft.id === selectedAircraftId,
   );
+  const situationPosture = snapshot?.operatingPosture ?? operatingPosture;
 
   return (
     <main>
@@ -131,7 +135,21 @@ export function App({
             <section aria-labelledby="situation-heading">
               <p>Situation</p>
               <h2 id="situation-heading">{snapshot.aircraft.length} aircraft tracked</h2>
-              <p>{snapshot.airport.name} local control volume.</p>
+              <p>
+                Wind {snapshot.weather.windDirectionDegrees}° at {snapshot.weather.windSpeedKnots} kt · Visibility {snapshot.weather.visibilityStatuteMiles} sm · Ceiling {snapshot.weather.ceilingFeet.toLocaleString()} ft
+              </p>
+              <p><strong>Operating Posture: {POSTURE_LABELS[situationPosture]}</strong></p>
+              {snapshot.runwayResources.runwayOccupancy.length === 0 ? (
+                <p>Runways clear.</p>
+              ) : (
+                <ul className="runway-occupancy" aria-label="Runway occupancy">
+                  {snapshot.runwayResources.runwayOccupancy.map((occupancy) => (
+                    <li key={`${occupancy.runwayId}-${occupancy.aircraftId}`}>
+                      Runway {occupancy.runwayId} occupied by {occupancy.callsign} ({occupancy.operation})
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
             <section aria-labelledby="selected-aircraft-heading">
               <p>Selected Aircraft</p>

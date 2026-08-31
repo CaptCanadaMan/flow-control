@@ -184,6 +184,23 @@ section + section {
   box-shadow: none;
 }
 
+.runway-occupancy {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  color: #f4d999;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  list-style: none;
+}
+
+.runway-occupancy li::before {
+  content: "●";
+  margin-right: 0.45rem;
+  color: #e6a94b;
+}
+
 code {
   display: block;
   overflow-x: auto;

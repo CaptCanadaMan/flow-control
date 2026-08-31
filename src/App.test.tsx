@@ -40,6 +40,42 @@ describe("WebMCP preflight", () => {
     expect(page.match(/tabindex="0"/g)).toHaveLength(snapshot.aircraft.length);
   });
 
+  it("renders live weather, runway occupancy, and authority in the Situation view", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-3-situation",
+      operatingPosture: "observe",
+    });
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    snapshot.weather = {
+      preset: "westerly",
+      windDirectionDegrees: 270,
+      windSpeedKnots: 12,
+      visibilityStatuteMiles: 8,
+      ceilingFeet: 4_500,
+    };
+    snapshot.runwayResources = {
+      runwayOccupancy: [
+        {
+          runwayId: "09-27",
+          aircraftId: "fc-101",
+          callsign: "FLOW 101",
+          operation: "departure",
+          clearsAtSimulationTimeMs: 30_000,
+        },
+      ],
+      intersectionOccupancy: [],
+    };
+    snapshot.operatingPosture = "assist";
+
+    const page = renderToStaticMarkup(<App webMcpAvailable snapshot={snapshot} />);
+
+    expect(page).toContain("Wind 270° at 12 kt");
+    expect(page).toContain("Visibility 8 sm");
+    expect(page).toContain("Ceiling 4,500 ft");
+    expect(page).toContain("Runway 09-27 occupied by FLOW 101 (departure)");
+    expect(page).toContain("Operating Posture: Assist");
+  });
+
   it("blocks the Shift and explains how to reopen an unsupported browser", () => {
     const page = renderToStaticMarkup(<App webMcpAvailable={false} />);
 
