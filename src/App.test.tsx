@@ -120,6 +120,46 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Expires at 00:30");
   });
 
+  it("offers an explicit approval action only for a staged Recovery Plan", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-3-recovery-approval",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-recovery-plan",
+      actor: "tower-agent",
+      planReference: "go-around-recovery",
+      runwayClearances: [
+        {
+          aircraftId: "fc-202",
+          clearance: { kind: "go-around", runwayId: "04-22", runwayEnd: "22" },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: { kind: "hold-short", runwayId: "09-27", runwayEnd: "09" },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+
+    const page = renderToStaticMarkup(
+      <App
+        webMcpAvailable
+        snapshot={snapshot}
+        onApproveRecoveryPlan={() => undefined}
+      />,
+    );
+
+    expect(page).toContain("Recovery Plan");
+    expect(page).toContain("Approve &amp; dispatch Recovery Plan");
+  });
+
   it("blocks the Shift and explains how to reopen an unsupported browser", () => {
     const page = renderToStaticMarkup(<App webMcpAvailable={false} />);
 

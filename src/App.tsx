@@ -59,6 +59,7 @@ export function App({
   snapshot,
   selectedAircraftId,
   onSelectAircraft,
+  onApproveRecoveryPlan,
   shiftStatus = "armed",
   stateVersion = 0,
   operatingPosture = "observe",
@@ -84,6 +85,7 @@ export function App({
   >;
   selectedAircraftId?: string;
   onSelectAircraft?: (aircraftId: string) => void;
+  onApproveRecoveryPlan?: () => void;
   shiftStatus?: "armed" | "active";
   stateVersion?: number;
   operatingPosture?: OperatingPosture;
@@ -255,6 +257,11 @@ export function App({
                       })}
                   </ul>
                   <p>Expires at {formatSimulationTime(activePlan.plan.expiresAtSimulationTimeMs)}</p>
+                  {snapshot.stagedRecoveryPlan ? (
+                    <button type="button" onClick={onApproveRecoveryPlan}>
+                      Approve & dispatch Recovery Plan
+                    </button>
+                  ) : null}
                 </>
               ) : (
                 <p>Staged plans will appear here for accountable review.</p>

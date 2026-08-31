@@ -70,6 +70,16 @@ function FlowControlPage() {
       snapshot={snapshot}
       selectedAircraftId={selectedAircraftId}
       onSelectAircraft={setSelectedAircraftId}
+      onApproveRecoveryPlan={() => {
+        if (!application || !snapshot?.stagedRecoveryPlan) {
+          return;
+        }
+        application.command({
+          type: "approve-recovery-plan",
+          actor: "supervising-controller",
+          expectedStateVersion: snapshot.stateVersion,
+        });
+      }}
       shiftStatus={snapshot?.shiftStatus}
       stateVersion={snapshot?.stateVersion}
       operatingPosture={snapshot?.operatingPosture}
