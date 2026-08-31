@@ -6,6 +6,48 @@ const POSTURE_LABELS: Record<OperatingPosture, string> = {
   "take-the-sector": "Take the Sector",
 };
 
+const PLAN_CLASSIFICATION_LABELS = {
+  routine: "Routine",
+  elevated: "Elevated",
+  "exceptional-recovery": "Exceptional Recovery",
+} as const;
+
+const CLEARANCE_LABELS = {
+  "hold-short": "hold short",
+  "line-up-and-wait": "line up and wait",
+  "cancel-runway-clearance": "cancel runway clearance",
+  "clear-for-takeoff": "cleared for takeoff",
+  "clear-to-land": "cleared to land",
+  "clear-touch-and-go": "cleared touch-and-go",
+  "go-around": "go around",
+} as const;
+
+function formatSimulationTime(simulationTimeMs: number) {
+  const totalSeconds = Math.floor(simulationTimeMs / 1_000);
+  const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function tacticalInstructionSummary(instruction: {
+  headingDegrees?: number;
+  altitudeFeet?: number;
+  speedKnots?: number;
+}) {
+  const parts = [
+    instruction.headingDegrees === undefined
+      ? undefined
+      : `heading ${instruction.headingDegrees}`,
+    instruction.altitudeFeet === undefined
+      ? undefined
+      : `altitude ${instruction.altitudeFeet.toLocaleString()} ft`,
+    instruction.speedKnots === undefined
+      ? undefined
+      : `speed ${instruction.speedKnots} kt`,
+  ].filter((part): part is string => part !== undefined);
+  return parts.join(" · ");
+}
+
 export type ConnectionHealth =
   | "healthy"
   | "warning"
@@ -31,7 +73,14 @@ export function App({
   webMcpAvailable: boolean;
   snapshot?: Pick<
     TowerSnapshot,
-    "aircraft" | "airport" | "weather" | "runwayResources" | "operatingPosture"
+    | "aircraft"
+    | "airport"
+    | "weather"
+    | "runwayResources"
+    | "operatingPosture"
+    | "simulationTimeMs"
+    | "stagedClearancePlan"
+    | "stagedRecoveryPlan"
   >;
   selectedAircraftId?: string;
   onSelectAircraft?: (aircraftId: string) => void;
@@ -63,6 +112,11 @@ export function App({
     (aircraft) => aircraft.id === selectedAircraftId,
   );
   const situationPosture = snapshot?.operatingPosture ?? operatingPosture;
+  const activePlan = snapshot?.stagedRecoveryPlan
+    ? { label: "Recovery Plan", plan: snapshot.stagedRecoveryPlan }
+    : snapshot?.stagedClearancePlan
+      ? { label: "Clearance Plan", plan: snapshot.stagedClearancePlan }
+      : undefined;
 
   return (
     <main>
@@ -162,6 +216,48 @@ export function App({
                 </p>
               ) : (
                 <p>Select an aircraft on the radar to inspect its operational context.</p>
+              )}
+            </section>
+            <section aria-labelledby="active-plan-heading">
+              <p>Active Plan</p>
+              <h2 id="active-plan-heading">
+                {activePlan ? activePlan.label : "No active plan"}
+              </h2>
+              {activePlan ? (
+                <>
+                  <p className="plan-summary">
+                    <strong>{activePlan.plan.reference}</strong> · {PLAN_CLASSIFICATION_LABELS[activePlan.plan.classification]}
+                  </p>
+                  <ul className="plan-members">
+                    {activePlan.plan.members
+                      .filter((member) => member.selected)
+                      .map((member) => {
+                        const aircraft = snapshot.aircraft.find(
+                          (candidate) => candidate.id === member.aircraftId,
+                        );
+                        return (
+                          <li key={member.id}>
+                            {aircraft?.callsign ?? member.aircraftId} · {CLEARANCE_LABELS[member.clearance.kind]} runway {member.clearance.runwayEnd}
+                          </li>
+                        );
+                      })}
+                    {activePlan.plan.tacticalMembers
+                      .filter((member) => member.selected)
+                      .map((member) => {
+                        const aircraft = snapshot.aircraft.find(
+                          (candidate) => candidate.id === member.aircraftId,
+                        );
+                        return (
+                          <li key={member.id}>
+                            {aircraft?.callsign ?? member.aircraftId} · {tacticalInstructionSummary(member.instruction)}
+                          </li>
+                        );
+                      })}
+                  </ul>
+                  <p>Expires at {formatSimulationTime(activePlan.plan.expiresAtSimulationTimeMs)}</p>
+                </>
+              ) : (
+                <p>Staged plans will appear here for accountable review.</p>
               )}
             </section>
           </aside>

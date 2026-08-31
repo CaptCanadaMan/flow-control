@@ -201,6 +201,27 @@ section + section {
   color: #e6a94b;
 }
 
+.plan-summary {
+  color: #d7ede4;
+}
+
+.plan-members {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0 0 0.9rem;
+  padding: 0;
+  color: #c4dbd1;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  list-style: none;
+}
+
+.plan-members li {
+  padding-left: 0.75rem;
+  border-left: 2px solid #4b7569;
+}
+
 code {
   display: block;
   overflow-x: auto;

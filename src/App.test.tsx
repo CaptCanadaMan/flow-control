@@ -76,6 +76,50 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Operating Posture: Assist");
   });
 
+  it("renders a staged Clearance Plan with its selected operational work and expiry", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-3-active-plan",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "departure-and-arrival",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      tacticalInstructions: [
+        {
+          aircraftId: "fc-202",
+          instruction: { headingDegrees: 120, altitudeFeet: 3_000, speedKnots: 170 },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+
+    const page = renderToStaticMarkup(<App webMcpAvailable snapshot={snapshot} />);
+
+    expect(page).toContain("Active Plan");
+    expect(page).toContain("departure-and-arrival");
+    expect(page).toContain("Routine");
+    expect(page).toContain("FLOW 101 · cleared for takeoff runway 09");
+    expect(page).toContain("FLOW 202 · heading 120 · altitude 3,000 ft · speed 170 kt");
+    expect(page).toContain("Expires at 00:30");
+  });
+
   it("blocks the Shift and explains how to reopen an unsupported browser", () => {
     const page = renderToStaticMarkup(<App webMcpAvailable={false} />);
 
