@@ -178,6 +178,32 @@ const AIRCRAFT_CAPABILITY_PROFILES = [
 type AircraftCapabilityProfiles = typeof AIRCRAFT_CAPABILITY_PROFILES;
 type AircraftCapabilityProfileId = AircraftCapabilityProfiles[number]["id"];
 
+type RunwayClearanceKind =
+  | "hold-short"
+  | "line-up-and-wait"
+  | "cancel-runway-clearance"
+  | "clear-for-takeoff"
+  | "clear-to-land"
+  | "clear-touch-and-go"
+  | "go-around";
+
+type RunwayClearance = {
+  kind: RunwayClearanceKind;
+  runwayId: "09-27" | "04-22";
+  runwayEnd: "09" | "27" | "04" | "22";
+};
+
+type TacticalInstruction = {
+  headingDegrees?: number;
+  altitudeFeet?: number;
+  speedKnots?: number;
+  circuit?: { action: "enter" | "adjust"; circuitId: "runway-09-left" };
+  sequenceBehindAircraftId?: string;
+  extendCircuitLeg?: "upwind" | "crosswind" | "downwind" | "base";
+  localHoldId?: "northwest-hold" | "southeast-hold";
+  orbitDirection?: "left" | "right";
+};
+
 type AircraftFlightPhase =
   | "hold-short"
   | "inbound"
@@ -186,7 +212,13 @@ type AircraftFlightPhase =
   | "departure"
   | "out-of-play";
 
-type PilotState = "ready" | "awaiting-contact" | "monitoring" | "operating" | "complete";
+type PilotState =
+  | "ready"
+  | "awaiting-contact"
+  | "monitoring"
+  | "awaiting-readback"
+  | "operating"
+  | "complete";
 
 type Aircraft = {
   id: string;
@@ -200,7 +232,23 @@ type Aircraft = {
   flightPhase: AircraftFlightPhase;
   intention: "departure" | "arrival" | "circuit";
   pilotState: PilotState;
+  activeRunwayClearance?: RunwayClearance;
+  activeTacticalInstruction?: TacticalInstruction;
   exit?: "departed" | "landed";
+};
+
+type Transmission = {
+  sequence: number;
+  speaker: "controller" | "pilot";
+  aircraftId: string;
+  text: string;
+  simulationTimeMs: number;
+};
+
+type PendingPilotReadback = {
+  aircraftId: string;
+  text: string;
+  dueAtSimulationTimeMs: number;
 };
 
 type AircraftLifecycle = {
@@ -401,6 +449,9 @@ type OperationalReceipt = {
     | "shift-began"
     | "aircraft-state-transition"
     | "runway-resources-transition"
+    | "runway-clearance-issued"
+    | "tactical-instruction-issued"
+    | "pilot-readback-received"
     | "operating-posture-reduced"
     | "operating-posture-increase-requested"
     | "operating-posture-increase-confirmed"
@@ -418,6 +469,9 @@ type ApplicationState = {
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   aircraft: Aircraft[];
   runwayResources: RunwayResources;
+  transmissions: Transmission[];
+  pendingPilotReadbacks: PendingPilotReadback[];
+  nextTransmissionSequence: number;
   operatingPosture: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
@@ -438,6 +492,7 @@ export type TowerSnapshot = Pick<
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   aircraft: Aircraft[];
   runwayResources: RunwayResources;
+  transmissions: Transmission[];
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -447,6 +502,7 @@ type Query =
   | { type: "available-capabilities" }
   | { type: "tower-snapshot" }
   | { type: "operational-receipts" }
+  | { type: "transmissions" }
   | { type: "capabilities-to-register" }
   | { type: "connection-health" }
   | {
@@ -512,6 +568,22 @@ type AdvanceSimulationCommand = {
   steps?: number;
 };
 
+type IssueRunwayClearanceCommand = {
+  type: "issue-runway-clearance";
+  actor: "tower-agent" | "supervising-controller";
+  aircraftId: string;
+  clearance: RunwayClearance;
+  expectedStateVersion: number;
+};
+
+type IssueTacticalInstructionCommand = {
+  type: "issue-tactical-instruction";
+  actor: "tower-agent" | "supervising-controller";
+  aircraftId: string;
+  instruction: TacticalInstruction;
+  expectedStateVersion: number;
+};
+
 type Command =
   | BeginShiftCommand
   | ReduceOperatingPostureCommand
@@ -521,6 +593,8 @@ type Command =
   | RenewAgentLeaseCommand
   | SetAgentWaitCommand
   | StageClearancePlanCommand
+  | IssueRunwayClearanceCommand
+  | IssueTacticalInstructionCommand
   | AdvanceSimulationCommand;
 
 const OBSERVE_CAPABILITIES: Capability[] = [
@@ -602,7 +676,105 @@ function generateScenario(scenarioSeed: string) {
       INITIAL_AIRCRAFT_LIFECYCLES.map(({ aircraft }) => aircraft),
     ),
     runwayResources: { runwayOccupancy: [], intersectionOccupancy: [] },
+    transmissions: [],
+    pendingPilotReadbacks: [],
+    nextTransmissionSequence: 1,
   };
+}
+
+const RUNWAY_CLEARANCE_PHRASES: Record<RunwayClearanceKind, string> = {
+  "hold-short": "hold short",
+  "line-up-and-wait": "line up and wait",
+  "cancel-runway-clearance": "cancel runway clearance",
+  "clear-for-takeoff": "cleared for takeoff",
+  "clear-to-land": "cleared to land",
+  "clear-touch-and-go": "cleared touch-and-go",
+  "go-around": "go around",
+};
+
+function runwayClearanceText(callsign: string, clearance: RunwayClearance) {
+  return `${callsign}, ${RUNWAY_CLEARANCE_PHRASES[clearance.kind]} runway ${clearance.runwayEnd}.`;
+}
+
+function tacticalInstructionText(
+  callsign: string,
+  instruction: TacticalInstruction,
+) {
+  const parts = [
+    instruction.headingDegrees === undefined
+      ? undefined
+      : `heading ${instruction.headingDegrees}`,
+    instruction.altitudeFeet === undefined
+      ? undefined
+      : `altitude ${instruction.altitudeFeet} feet`,
+    instruction.speedKnots === undefined
+      ? undefined
+      : `speed ${instruction.speedKnots} knots`,
+    instruction.circuit === undefined
+      ? undefined
+      : `${instruction.circuit.action} circuit ${instruction.circuit.circuitId}`,
+    instruction.sequenceBehindAircraftId === undefined
+      ? undefined
+      : `sequence behind ${instruction.sequenceBehindAircraftId}`,
+    instruction.extendCircuitLeg === undefined
+      ? undefined
+      : `extend ${instruction.extendCircuitLeg}`,
+    instruction.localHoldId === undefined
+      ? undefined
+      : `hold at ${instruction.localHoldId}`,
+    instruction.orbitDirection === undefined
+      ? undefined
+      : `${instruction.orbitDirection} 360`,
+  ].filter((part): part is string => part !== undefined);
+  return parts.length === 0 ? undefined : `${callsign}, ${parts.join(", ")}.`;
+}
+
+function appendTransmission(
+  state: ApplicationState,
+  speaker: Transmission["speaker"],
+  aircraftId: string,
+  text: string,
+) {
+  state.transmissions.push({
+    sequence: state.nextTransmissionSequence,
+    speaker,
+    aircraftId,
+    text,
+    simulationTimeMs: state.simulationTimeMs,
+  });
+  state.nextTransmissionSequence += 1;
+}
+
+function queuePilotReadback(
+  state: ApplicationState,
+  aircraftId: string,
+  text: string,
+) {
+  state.pendingPilotReadbacks.push({
+    aircraftId,
+    text,
+    dueAtSimulationTimeMs: state.simulationTimeMs + 1_000,
+  });
+}
+
+function deliverDuePilotReadbacks(state: ApplicationState) {
+  const dueReadbacks = state.pendingPilotReadbacks.filter(
+    ({ dueAtSimulationTimeMs }) =>
+      dueAtSimulationTimeMs <= state.simulationTimeMs,
+  );
+  state.pendingPilotReadbacks = state.pendingPilotReadbacks.filter(
+    ({ dueAtSimulationTimeMs }) =>
+      dueAtSimulationTimeMs > state.simulationTimeMs,
+  );
+  for (const readback of dueReadbacks) {
+    appendTransmission(state, "pilot", readback.aircraftId, readback.text);
+    state.aircraft = state.aircraft.map((aircraft) =>
+      aircraft.id === readback.aircraftId && aircraft.flightPhase !== "out-of-play"
+        ? { ...aircraft, pilotState: "operating" }
+        : aircraft,
+    );
+  }
+  return dueReadbacks;
 }
 
 function runwayResourcesAt(
@@ -768,6 +940,7 @@ export function createFlowControlApplication(options: {
       aircraftCapabilityProfiles: structuredClone(state.aircraftCapabilityProfiles),
       aircraft: structuredClone(state.aircraft),
       runwayResources: structuredClone(state.runwayResources),
+      transmissions: structuredClone(state.transmissions),
       operatingPosture: state.operatingPosture,
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,
@@ -875,6 +1048,17 @@ export function createFlowControlApplication(options: {
               stateVersionAfter: state.stateVersion,
             });
           }
+          for (const readback of deliverDuePilotReadbacks(state)) {
+            const stateVersionBefore = state.stateVersion;
+            state.stateVersion += 1;
+            state.operationalReceipts.push({
+              actor: "simulation-clock",
+              action: "pilot-readback-received",
+              simulationTimeMs: state.simulationTimeMs,
+              stateVersionBefore,
+              stateVersionAfter: state.stateVersion,
+            });
+          }
         }
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -896,6 +1080,107 @@ export function createFlowControlApplication(options: {
             "Shift start refused because the expected State Version is stale.",
           rationale: `Expected State Version ${command.expectedStateVersion}; current State Version is ${state.stateVersion}.`,
           nextAction: "get_tower_snapshot" as const,
+        };
+      }
+
+      if (command.type === "issue-runway-clearance") {
+        const aircraft = state.aircraft.find(
+          ({ id }) => id === command.aircraftId,
+        );
+        if (!aircraft || aircraft.flightPhase === "out-of-play") {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Runway Clearance requires an active aircraft.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        const text = runwayClearanceText(aircraft.callsign, command.clearance);
+        state.aircraft = state.aircraft.map((candidate) =>
+          candidate.id === aircraft.id
+            ? {
+                ...candidate,
+                activeRunwayClearance: structuredClone(command.clearance),
+                pilotState: "awaiting-readback",
+              }
+            : candidate,
+        );
+        appendTransmission(state, "controller", aircraft.id, text);
+        queuePilotReadback(state, aircraft.id, text);
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "runway-clearance-issued",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `${text} Pilot readback is pending.`,
+          nextAction: "continue" as const,
+        };
+      }
+
+      if (command.type === "issue-tactical-instruction") {
+        const aircraft = state.aircraft.find(
+          ({ id }) => id === command.aircraftId,
+        );
+        if (!aircraft || aircraft.flightPhase === "out-of-play") {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Tactical Instruction requires an active aircraft.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+        const text = tacticalInstructionText(
+          aircraft.callsign,
+          command.instruction,
+        );
+        if (!text) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Tactical Instruction requires at least one direction.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        state.aircraft = state.aircraft.map((candidate) =>
+          candidate.id === aircraft.id
+            ? {
+                ...candidate,
+                activeTacticalInstruction: structuredClone(command.instruction),
+                pilotState: "awaiting-readback",
+              }
+            : candidate,
+        );
+        appendTransmission(state, "controller", aircraft.id, text);
+        queuePilotReadback(state, aircraft.id, text);
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "tactical-instruction-issued",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `${text} Pilot readback is pending.`,
+          nextAction: "continue" as const,
         };
       }
 
@@ -1076,6 +1361,8 @@ export function createFlowControlApplication(options: {
               : activeCapabilities(state.operatingPosture);
         case "operational-receipts":
           return [...state.operationalReceipts];
+        case "transmissions":
+          return structuredClone(state.transmissions);
         case "connection-health": {
           return connectionHealth();
         }

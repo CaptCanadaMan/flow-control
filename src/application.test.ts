@@ -272,6 +272,7 @@ describe("Shift lifecycle", () => {
         aircraftCapabilityProfiles: EXPECTED_AIRCRAFT_CAPABILITY_PROFILES,
         aircraft: expect.any(Array),
         runwayResources: expect.any(Object),
+        transmissions: [],
       },
       receipts: [
         {
@@ -559,6 +560,131 @@ describe("Shift lifecycle", () => {
       (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
         .runwayResources,
     ).toEqual({ runwayOccupancy: [], intersectionOccupancy: [] });
+  });
+
+  it("records structured Clearances, Tactical Instructions, and delayed Pilot readbacks", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-1-command-vocabulary",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const runwayResult = application.command({
+      type: "issue-runway-clearance",
+      actor: "supervising-controller",
+      aircraftId: "fc-101",
+      clearance: {
+        kind: "clear-for-takeoff",
+        runwayId: "09-27",
+        runwayEnd: "09",
+      },
+      expectedStateVersion: 1,
+    });
+    expect(runwayResult).toMatchObject({
+      status: "success",
+      stateVersion: 2,
+      nextAction: "continue",
+    });
+
+    const tacticalResult = application.command({
+      type: "issue-tactical-instruction",
+      actor: "supervising-controller",
+      aircraftId: "fc-202",
+      instruction: {
+        headingDegrees: 120,
+        altitudeFeet: 3_000,
+        speedKnots: 170,
+      },
+      expectedStateVersion: 2,
+    });
+    expect(tacticalResult).toMatchObject({
+      status: "success",
+      stateVersion: 3,
+      nextAction: "continue",
+    });
+
+    const issuedSnapshot = application.query({
+      type: "tower-snapshot",
+    }) as TowerSnapshot;
+    expect(
+      issuedSnapshot.aircraft.find(({ id }) => id === "fc-101"),
+    ).toMatchObject({
+      activeRunwayClearance: {
+        kind: "clear-for-takeoff",
+        runwayId: "09-27",
+        runwayEnd: "09",
+      },
+      pilotState: "awaiting-readback",
+    });
+    expect(
+      issuedSnapshot.aircraft.find(({ id }) => id === "fc-202"),
+    ).toMatchObject({
+      activeTacticalInstruction: {
+        headingDegrees: 120,
+        altitudeFeet: 3_000,
+        speedKnots: 170,
+      },
+      pilotState: "awaiting-readback",
+    });
+    expect(issuedSnapshot.transmissions).toEqual([
+      {
+        sequence: 1,
+        speaker: "controller",
+        aircraftId: "fc-101",
+        text: "FLOW 101, cleared for takeoff runway 09.",
+        simulationTimeMs: 0,
+      },
+      {
+        sequence: 2,
+        speaker: "controller",
+        aircraftId: "fc-202",
+        text: "FLOW 202, heading 120, altitude 3000 feet, speed 170 knots.",
+        simulationTimeMs: 0,
+      },
+    ]);
+
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 10,
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .transmissions,
+    ).toEqual([
+      {
+        sequence: 1,
+        speaker: "controller",
+        aircraftId: "fc-101",
+        text: "FLOW 101, cleared for takeoff runway 09.",
+        simulationTimeMs: 0,
+      },
+      {
+        sequence: 2,
+        speaker: "controller",
+        aircraftId: "fc-202",
+        text: "FLOW 202, heading 120, altitude 3000 feet, speed 170 knots.",
+        simulationTimeMs: 0,
+      },
+      {
+        sequence: 3,
+        speaker: "pilot",
+        aircraftId: "fc-101",
+        text: "FLOW 101, cleared for takeoff runway 09.",
+        simulationTimeMs: 1_000,
+      },
+      {
+        sequence: 4,
+        speaker: "pilot",
+        aircraftId: "fc-202",
+        text: "FLOW 202, heading 120, altitude 3000 feet, speed 170 knots.",
+        simulationTimeMs: 1_000,
+      },
+    ]);
   });
 
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
