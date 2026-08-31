@@ -261,6 +261,7 @@ describe("Shift lifecycle", () => {
         capabilitySynchronization: undefined,
         stagedClearancePlanReference: undefined,
         stagedClearancePlan: undefined,
+        stagedRecoveryPlan: undefined,
         simulationTimeMs: 300,
         stateVersion: 1,
         weather: {
@@ -1079,6 +1080,60 @@ describe("Shift lifecycle", () => {
         evaluatedStateVersion: 1,
         expiresAtSimulationTimeMs: 30_000,
       },
+    });
+  });
+
+  it("stages an Exceptional Recovery Plan for explicit human approval without dispatching it", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-recovery-plan",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.command({
+        type: "stage-recovery-plan",
+        actor: "tower-agent",
+        planReference: "go-around-recovery",
+        runwayClearances: [
+          {
+            aircraftId: "fc-202",
+            clearance: {
+              kind: "go-around",
+              runwayId: "04-22",
+              runwayEnd: "22",
+            },
+          },
+          {
+            aircraftId: "fc-404",
+            clearance: {
+              kind: "hold-short",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+        expectedStateVersion: 1,
+      }),
+    ).toEqual({
+      status: "approval-required",
+      stateVersion: 2,
+      summary:
+        "Recovery Plan go-around-recovery staged for explicit human approval.",
+      nextAction: "review-recovery-plan",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedRecoveryPlan: {
+        reference: "go-around-recovery",
+        classification: "exceptional-recovery",
+        evaluatedStateVersion: 1,
+        expiresAtSimulationTimeMs: 30_000,
+      },
+      transmissions: [],
     });
   });
 

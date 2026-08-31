@@ -214,6 +214,8 @@ type ClearancePlan = {
   expiresAtSimulationTimeMs: number;
 };
 
+type RecoveryPlan = ClearancePlan;
+
 type TacticalInstruction = {
   headingDegrees?: number;
   altitudeFeet?: number;
@@ -478,7 +480,8 @@ type OperationalReceipt = {
     | "operating-posture-increase-confirmed"
     | "capability-synchronization-completed"
     | "category-override-updated"
-    | "clearance-plan-staged";
+    | "clearance-plan-staged"
+    | "recovery-plan-staged";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
@@ -500,6 +503,7 @@ type ApplicationState = {
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
   stagedClearancePlan?: ClearancePlan;
+  stagedRecoveryPlan?: RecoveryPlan;
   shiftStatus: "armed" | "active";
   simulationTimeMs: number;
   stateVersion: number;
@@ -522,6 +526,7 @@ export type TowerSnapshot = Pick<
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
   stagedClearancePlan?: ClearancePlan;
+  stagedRecoveryPlan?: RecoveryPlan;
 };
 
 type Query =
@@ -603,6 +608,14 @@ type StageClearancePlanCommand = {
   expectedStateVersion: number;
 };
 
+type StageRecoveryPlanCommand = {
+  type: "stage-recovery-plan";
+  actor: "tower-agent";
+  planReference: string;
+  runwayClearances: CandidateRunwayClearance[];
+  expectedStateVersion: number;
+};
+
 type AdvanceSimulationCommand = {
   type: "advance-simulation";
   actor: "simulation-clock";
@@ -635,6 +648,7 @@ type Command =
   | RenewAgentLeaseCommand
   | SetAgentWaitCommand
   | StageClearancePlanCommand
+  | StageRecoveryPlanCommand
   | IssueRunwayClearanceCommand
   | IssueTacticalInstructionCommand
   | AdvanceSimulationCommand;
@@ -1200,6 +1214,7 @@ export function createFlowControlApplication(options: {
       capabilitySynchronization: state.capabilitySynchronization,
       stagedClearancePlanReference: state.stagedClearancePlanReference,
       stagedClearancePlan: structuredClone(state.stagedClearancePlan),
+      stagedRecoveryPlan: structuredClone(state.stagedRecoveryPlan),
     };
   }
 
@@ -1591,6 +1606,71 @@ export function createFlowControlApplication(options: {
           stateVersion: state.stateVersion,
           summary: `Clearance Plan ${command.planReference} staged for human review.`,
           nextAction: "await-plan-review" as const,
+        };
+      }
+
+      if (
+        command.type === "stage-recovery-plan" &&
+        state.operatingPosture === "observe"
+      ) {
+        return {
+          status: "refusal" as const,
+          stateVersion: state.stateVersion,
+          summary:
+            "Recovery Plan staging requires Assist or Take the Sector.",
+          rationale: "Observe permits read and evaluation capabilities only.",
+          nextAction: "request-authority-increase" as const,
+        };
+      }
+
+      if (command.type === "stage-recovery-plan") {
+        const evaluation = evaluateRunwayClearanceSet(
+          state,
+          command.runwayClearances,
+        );
+        if (!evaluation.valid) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `Recovery Plan ${command.planReference} cannot be staged from an invalid clearance set.`,
+            nextAction: evaluation.nextAction,
+          };
+        }
+        if (evaluation.classification !== "exceptional-recovery") {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "Recovery Plan staging requires an Exceptional Recovery clearance set.",
+            nextAction: "stage-clearance-plan" as const,
+          };
+        }
+
+        state.stagedRecoveryPlan = {
+          reference: command.planReference,
+          runwayClearances: structuredClone(command.runwayClearances),
+          classification: evaluation.classification,
+          evaluatedStateVersion: state.stateVersion,
+          expiresAtSimulationTimeMs:
+            state.simulationTimeMs + PLAN_EXPIRY_WINDOW_MS,
+        };
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "recovery-plan-staged",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "approval-required" as const,
+          stateVersion: state.stateVersion,
+          summary: `Recovery Plan ${command.planReference} staged for explicit human approval.`,
+          nextAction: "review-recovery-plan" as const,
         };
       }
 
