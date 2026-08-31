@@ -1302,6 +1302,20 @@ export function createFlowControlApplication(options: {
       }
 
       if (command.type === "issue-tactical-instruction") {
+        if (
+          command.actor === "tower-agent" &&
+          state.operatingPosture !== "take-the-sector"
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Tactical Instruction requires Take the Sector.",
+            rationale:
+              `${POSTURE_LABELS[state.operatingPosture]} does not delegate Tactical Instruction dispatch to the Tower Agent.`,
+            nextAction: "request-authority-increase" as const,
+          };
+        }
+
         const aircraft = state.aircraft.find(
           ({ id }) => id === command.aircraftId,
         );

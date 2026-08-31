@@ -873,6 +873,39 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("refuses a cached Tower Agent Tactical Instruction in Assist", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-assist-policy",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.command({
+        type: "issue-tactical-instruction",
+        actor: "tower-agent",
+        aircraftId: "fc-202",
+        instruction: { headingDegrees: 120 },
+        expectedStateVersion: 1,
+      }),
+    ).toEqual({
+      status: "refusal",
+      stateVersion: 1,
+      summary: "Tactical Instruction requires Take the Sector.",
+      rationale:
+        "Assist does not delegate Tactical Instruction dispatch to the Tower Agent.",
+      nextAction: "request-authority-increase",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stateVersion: 1,
+      transmissions: [],
+    });
+  });
+
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
     vi.useFakeTimers();
     const application = createFlowControlApplication({
