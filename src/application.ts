@@ -524,7 +524,8 @@ type OperationalReceipt = {
     | "recovery-plan-invalidated"
     | "clearance-plan-member-selection-updated"
     | "clearance-plan-dispatched"
-    | "clearance-plan-alternative-selected";
+    | "clearance-plan-alternative-selected"
+    | "recovery-plan-approved-and-dispatched";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
@@ -681,6 +682,12 @@ type SelectClearancePlanAlternativeCommand = {
   expectedStateVersion: number;
 };
 
+type ApproveRecoveryPlanCommand = {
+  type: "approve-recovery-plan";
+  actor: "supervising-controller";
+  expectedStateVersion: number;
+};
+
 type AdvanceSimulationCommand = {
   type: "advance-simulation";
   actor: "simulation-clock";
@@ -717,6 +724,7 @@ type Command =
   | SetClearancePlanMemberSelectionCommand
   | DispatchSelectedClearancePlanCommand
   | SelectClearancePlanAlternativeCommand
+  | ApproveRecoveryPlanCommand
   | IssueRunwayClearanceCommand
   | IssueTacticalInstructionCommand
   | AdvanceSimulationCommand;
@@ -2007,6 +2015,95 @@ export function createFlowControlApplication(options: {
           status: "success" as const,
           stateVersion: state.stateVersion,
           summary: `Clearance Plan ${plan.reference} dispatched ${selectedMembers.length} selected clearance member${
+            selectedMembers.length === 1 ? "" : "s"
+          }.`,
+          nextAction: "continue" as const,
+        };
+      }
+
+      if (command.type === "approve-recovery-plan") {
+        const plan = state.stagedRecoveryPlan;
+        if (!plan) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Recovery Plan approval requires an active Recovery Plan.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+        const selectedMembers = plan.members.filter(({ selected }) => selected);
+        const evaluation = evaluateRunwayClearanceSet(
+          state,
+          selectedMembers.map(({ aircraftId, clearance }) => ({
+            aircraftId,
+            clearance,
+          })),
+        );
+        if (
+          !evaluation.valid ||
+          evaluation.classification !== "exceptional-recovery"
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "Recovery Plan approval requires the current valid Exceptional Recovery set.",
+            nextAction: evaluation.valid
+              ? ("stage-recovery-plan" as const)
+              : evaluation.nextAction,
+          };
+        }
+        const selectedAircraft = selectedMembers.map((member) => ({
+          ...member,
+          aircraft: state.aircraft.find(({ id }) => id === member.aircraftId),
+        }));
+        if (
+          selectedAircraft.some(
+            ({ aircraft }) => !aircraft || aircraft.flightPhase === "out-of-play",
+          )
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Recovery Plan approval contains an inactive aircraft.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        state.aircraft = state.aircraft.map((aircraft) => {
+          const member = selectedMembers.find(
+            ({ aircraftId }) => aircraftId === aircraft.id,
+          );
+          return member
+            ? {
+                ...aircraft,
+                activeRunwayClearance: structuredClone(member.clearance),
+                pilotState: "awaiting-readback",
+              }
+            : aircraft;
+        });
+        for (const { aircraft, clearance } of selectedAircraft) {
+          const text = runwayClearanceText(aircraft!.callsign, clearance);
+          appendTransmission(state, "controller", aircraft!.id, text);
+          queuePilotReadback(state, aircraft!.id, text);
+        }
+        delete state.stagedRecoveryPlan;
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "recovery-plan-approved-and-dispatched",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `Recovery Plan ${plan.reference} approved and dispatched ${selectedMembers.length} clearance member${
             selectedMembers.length === 1 ? "" : "s"
           }.`,
           nextAction: "continue" as const,

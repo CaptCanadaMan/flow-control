@@ -1137,6 +1137,71 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("revalidates and dispatches an approved Recovery Plan atomically", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-recovery-approval",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-recovery-plan",
+      actor: "tower-agent",
+      planReference: "go-around-recovery",
+      runwayClearances: [
+        {
+          aircraftId: "fc-202",
+          clearance: {
+            kind: "go-around",
+            runwayId: "04-22",
+            runwayEnd: "22",
+          },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+
+    expect(
+      application.command({
+        type: "approve-recovery-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: 2,
+      }),
+    ).toEqual({
+      status: "success",
+      stateVersion: 3,
+      summary:
+        "Recovery Plan go-around-recovery approved and dispatched 2 clearance members.",
+      nextAction: "continue",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedRecoveryPlan: undefined,
+      transmissions: [
+        {
+          speaker: "controller",
+          aircraftId: "fc-202",
+          text: "FLOW 202, go around runway 22.",
+        },
+        {
+          speaker: "controller",
+          aircraftId: "fc-404",
+          text: "FLOW 404, hold short runway 09.",
+        },
+      ],
+    });
+  });
+
   it("expires a staged Clearance Plan at its deterministic Plan Expiry", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-plan-expiry",
