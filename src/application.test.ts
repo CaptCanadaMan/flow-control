@@ -687,6 +687,70 @@ describe("Shift lifecycle", () => {
     ]);
   });
 
+  it("evaluates a proposed runway Clearance against occupied runway and intersection resources without changing the Shift", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-conflict-evaluation",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 100,
+    });
+
+    const beforeEvaluation = {
+      snapshot: application.query({ type: "tower-snapshot" }),
+      receipts: application.query({ type: "operational-receipts" }),
+    };
+
+    expect(
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: 3,
+        runwayClearances: [
+          {
+            aircraftId: "fc-404",
+            clearance: {
+              kind: "clear-for-takeoff",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      status: "refusal",
+      valid: false,
+      evaluatedStateVersion: 3,
+      simulationTimeMs: 10_000,
+      affectedAircraft: ["fc-101", "fc-404"],
+      conflicts: [
+        {
+          kind: "runway-occupied",
+          resourceId: "09-27",
+          aircraftIds: ["fc-101", "fc-404"],
+        },
+        {
+          kind: "intersection-occupied",
+          resourceId: "primary-crosswind",
+          aircraftIds: ["fc-101", "fc-404"],
+        },
+      ],
+      mustIssueBySimulationTimeMs: 30_000,
+      nextAction: "wait-for-runway-resource",
+    });
+
+    expect({
+      snapshot: application.query({ type: "tower-snapshot" }),
+      receipts: application.query({ type: "operational-receipts" }),
+    }).toEqual(beforeEvaluation);
+  });
+
   it("returns a bounded heartbeat while the Tower Agent monitors an active Shift", async () => {
     vi.useFakeTimers();
     const application = createFlowControlApplication({

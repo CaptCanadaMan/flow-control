@@ -193,6 +193,11 @@ type RunwayClearance = {
   runwayEnd: "09" | "27" | "04" | "22";
 };
 
+type CandidateRunwayClearance = {
+  aircraftId: string;
+  clearance: RunwayClearance;
+};
+
 type TacticalInstruction = {
   headingDegrees?: number;
   altitudeFeet?: number;
@@ -503,6 +508,11 @@ type Query =
   | { type: "tower-snapshot" }
   | { type: "operational-receipts" }
   | { type: "transmissions" }
+  | {
+      type: "evaluate-clearance-set";
+      expectedStateVersion: number;
+      runwayClearances: CandidateRunwayClearance[];
+    }
   | { type: "capabilities-to-register" }
   | { type: "connection-health" }
   | {
@@ -831,6 +841,90 @@ function advanceRunwayResources(state: ApplicationState) {
   }
   state.runwayResources = nextResources;
   return true;
+}
+
+function evaluateRunwayClearanceSet(
+  state: ApplicationState,
+  runwayClearances: CandidateRunwayClearance[],
+) {
+  const conflicts: Array<{
+    kind: "runway-occupied" | "intersection-occupied";
+    resourceId: string;
+    aircraftIds: string[];
+  }> = [];
+  const mustIssueBy: number[] = [];
+
+  for (const candidate of runwayClearances) {
+    const occupiedRunway = state.runwayResources.runwayOccupancy.filter(
+      ({ runwayId }) => runwayId === candidate.clearance.runwayId,
+    );
+    if (occupiedRunway.length > 0) {
+      conflicts.push({
+        kind: "runway-occupied",
+        resourceId: candidate.clearance.runwayId,
+        aircraftIds: [
+          ...occupiedRunway.map(({ aircraftId }) => aircraftId),
+          candidate.aircraftId,
+        ],
+      });
+      mustIssueBy.push(
+        ...occupiedRunway.map(({ clearsAtSimulationTimeMs }) =>
+          clearsAtSimulationTimeMs,
+        ),
+      );
+    }
+
+    for (const intersection of state.airport.intersections) {
+      if (!intersection.runwayIds.includes(candidate.clearance.runwayId)) {
+        continue;
+      }
+      const intersectionOccupants = state.runwayResources.runwayOccupancy.filter(
+        ({ runwayId }) => intersection.runwayIds.includes(runwayId),
+      );
+      if (intersectionOccupants.length === 0) {
+        continue;
+      }
+      conflicts.push({
+        kind: "intersection-occupied",
+        resourceId: intersection.id,
+        aircraftIds: [
+          ...intersectionOccupants.map(({ aircraftId }) => aircraftId),
+          candidate.aircraftId,
+        ],
+      });
+      mustIssueBy.push(
+        ...intersectionOccupants.map(({ clearsAtSimulationTimeMs }) =>
+          clearsAtSimulationTimeMs,
+        ),
+      );
+    }
+  }
+
+  const affectedAircraft = [
+    ...new Set(conflicts.flatMap(({ aircraftIds }) => aircraftIds)),
+  ];
+  if (conflicts.length === 0) {
+    return {
+      status: "success" as const,
+      valid: true,
+      evaluatedStateVersion: state.stateVersion,
+      simulationTimeMs: state.simulationTimeMs,
+      affectedAircraft,
+      conflicts,
+      nextAction: "continue" as const,
+    };
+  }
+
+  return {
+    status: "refusal" as const,
+    valid: false,
+    evaluatedStateVersion: state.stateVersion,
+    simulationTimeMs: state.simulationTimeMs,
+    affectedAircraft,
+    conflicts,
+    mustIssueBySimulationTimeMs: Math.min(...mustIssueBy),
+    nextAction: "wait-for-runway-resource" as const,
+  };
 }
 
 function advanceAircraftState(state: ApplicationState) {
@@ -1363,6 +1457,18 @@ export function createFlowControlApplication(options: {
           return [...state.operationalReceipts];
         case "transmissions":
           return structuredClone(state.transmissions);
+        case "evaluate-clearance-set":
+          if (query.expectedStateVersion !== state.stateVersion) {
+            return {
+              status: "stale" as const,
+              evaluatedStateVersion: state.stateVersion,
+              simulationTimeMs: state.simulationTimeMs,
+              affectedAircraft: [],
+              summary: "Clearance-set evaluation requires the current State Version.",
+              nextAction: "get_tower_snapshot" as const,
+            };
+          }
+          return evaluateRunwayClearanceSet(state, query.runwayClearances);
         case "connection-health": {
           return connectionHealth();
         }
