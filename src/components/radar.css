@@ -1,0 +1,99 @@
+.radar-scope {
+  display: block;
+  width: min(100%, 46rem);
+  aspect-ratio: 1;
+  justify-self: center;
+  overflow: visible;
+  border: 1px solid #31584e;
+  border-radius: 0.65rem;
+  background:
+    radial-gradient(circle, rgb(24 75 63 / 36%), transparent 65%),
+    #06110f;
+}
+
+.radar-scope-boundary,
+.radar-scope-ring {
+  fill: none;
+  stroke: #31584e;
+  stroke-width: 0.3;
+}
+
+.radar-scope-ring {
+  stroke: #1e4139;
+  stroke-dasharray: 1.2 1.2;
+}
+
+.radar-runway {
+  stroke: #a8c7bb;
+  stroke-linecap: round;
+  stroke-width: 0.8;
+}
+
+.radar-runway-occupancy {
+  stroke: #f1b84a;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
+.radar-hold-overlay circle {
+  fill: rgb(89 139 224 / 12%);
+  stroke: #7fa9ec;
+  stroke-dasharray: 1.25 1.25;
+  stroke-width: 0.35;
+}
+
+.radar-hold-overlay text {
+  fill: #a7c9ff;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 2.1px;
+  text-anchor: middle;
+}
+
+.radar-staged-path {
+  stroke: #d6a8f4;
+  stroke-dasharray: 1.4 1;
+  stroke-width: 0.5;
+}
+
+.radar-track-tail {
+  stroke: #5aa78c;
+  stroke-dasharray: 0.8 0.8;
+  stroke-width: 0.35;
+  opacity: 0.75;
+}
+
+.radar-aircraft {
+  cursor: pointer;
+}
+
+.radar-aircraft circle {
+  fill: #81f0c1;
+}
+
+.radar-aircraft:focus {
+  outline: none;
+}
+
+.radar-aircraft:focus-visible circle {
+  stroke: #fff1c9;
+  stroke-width: 0.65;
+}
+
+.radar-aircraft text {
+  fill: #c9e6da;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 2.6px;
+  font-weight: 650;
+}
+
+.radar-aircraft-selected circle {
+  fill: #f4cf7a;
+  stroke: #fff1c9;
+  stroke-width: 0.45;
+}
+
+@media (max-aspect-ratio: 1 / 1) {
+  .radar-scope {
+    width: min(100%, 38rem);
+  }
+}

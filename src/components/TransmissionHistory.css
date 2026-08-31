@@ -1,0 +1,50 @@
+.transmission-history {
+  min-width: 0;
+}
+
+.transmission-list {
+  display: grid;
+  gap: 0.65rem;
+  max-height: 18rem;
+  margin: 0;
+  padding: 0 0.35rem 0 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-color: #4b7569 transparent;
+}
+
+.transmission {
+  padding: 0.7rem 0.8rem;
+  border-left: 2px solid #4b7569;
+  border-radius: 0 0.4rem 0.4rem 0;
+  background: rgb(11 35 29 / 58%);
+}
+
+.transmission.pilot {
+  border-left-color: #b18b48;
+}
+
+.transmission-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  color: #d8f7eb;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.transmission-meta time {
+  color: #8db7a7;
+}
+
+.transmission p {
+  margin: 0.45rem 0 0;
+  color: #c4dbd1;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.transmission-empty {
+  margin-bottom: 0;
+}
