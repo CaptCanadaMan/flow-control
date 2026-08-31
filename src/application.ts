@@ -500,7 +500,8 @@ type OperationalReceipt = {
     | "recovery-plan-expired"
     | "clearance-plan-invalidated"
     | "recovery-plan-invalidated"
-    | "clearance-plan-member-selection-updated";
+    | "clearance-plan-member-selection-updated"
+    | "clearance-plan-dispatched";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
@@ -643,6 +644,12 @@ type SetClearancePlanMemberSelectionCommand = {
   expectedStateVersion: number;
 };
 
+type DispatchSelectedClearancePlanCommand = {
+  type: "dispatch-selected-clearance-plan";
+  actor: "supervising-controller";
+  expectedStateVersion: number;
+};
+
 type AdvanceSimulationCommand = {
   type: "advance-simulation";
   actor: "simulation-clock";
@@ -677,6 +684,7 @@ type Command =
   | StageClearancePlanCommand
   | StageRecoveryPlanCommand
   | SetClearancePlanMemberSelectionCommand
+  | DispatchSelectedClearancePlanCommand
   | IssueRunwayClearanceCommand
   | IssueTacticalInstructionCommand
   | AdvanceSimulationCommand;
@@ -1785,6 +1793,108 @@ export function createFlowControlApplication(options: {
             command.selected ? "selected" : "deselected"
           }; the selected subset remains valid.`,
           nextAction: "await-plan-review" as const,
+        };
+      }
+
+      if (command.type === "dispatch-selected-clearance-plan") {
+        const plan = state.stagedClearancePlan;
+        if (!plan) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Clearance Plan dispatch requires an active Clearance Plan.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+        const selectedMembers = plan.members.filter(({ selected }) => selected);
+        if (selectedMembers.length === 0) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Clearance Plan dispatch requires at least one selected member.",
+            nextAction: "await-plan-review" as const,
+          };
+        }
+        const evaluation = evaluateRunwayClearanceSet(
+          state,
+          selectedMembers.map(({ aircraftId, clearance }) => ({
+            aircraftId,
+            clearance,
+          })),
+        );
+        if (!evaluation.valid) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "The selected Clearance Plan subset is no longer valid against the current Shift.",
+            nextAction: evaluation.nextAction,
+          };
+        }
+        const selectedAircraft = selectedMembers.map((member) => ({
+          ...member,
+          aircraft: state.aircraft.find(({ id }) => id === member.aircraftId),
+        }));
+        if (
+          selectedAircraft.some(
+            ({ aircraft }) => !aircraft || aircraft.flightPhase === "out-of-play",
+          )
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary:
+              "The selected Clearance Plan subset contains an inactive aircraft.",
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        state.aircraft = state.aircraft.map((aircraft) => {
+          const member = selectedMembers.find(
+            ({ aircraftId }) => aircraftId === aircraft.id,
+          );
+          return member
+            ? {
+                ...aircraft,
+                activeRunwayClearance: structuredClone(member.clearance),
+                pilotState: "awaiting-readback",
+              }
+            : aircraft;
+        });
+        for (const { aircraft, clearance } of selectedAircraft) {
+          appendTransmission(
+            state,
+            "controller",
+            aircraft!.id,
+            runwayClearanceText(aircraft!.callsign, clearance),
+          );
+          queuePilotReadback(
+            state,
+            aircraft!.id,
+            runwayClearanceText(aircraft!.callsign, clearance),
+          );
+        }
+        delete state.stagedClearancePlan;
+        delete state.stagedClearancePlanReference;
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "clearance-plan-dispatched",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `Clearance Plan ${plan.reference} dispatched ${selectedMembers.length} selected clearance member${
+            selectedMembers.length === 1 ? "" : "s"
+          }.`,
+          nextAction: "continue" as const,
         };
       }
 

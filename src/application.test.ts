@@ -1293,6 +1293,79 @@ describe("Shift lifecycle", () => {
     });
   });
 
+  it("dispatches only the selected safe Clearance Plan subset", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-partial-dispatch",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "two-holds",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+        {
+          aircraftId: "fc-404",
+          clearance: {
+            kind: "hold-short",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+    application.command({
+      type: "set-clearance-plan-member-selection",
+      actor: "supervising-controller",
+      memberId: "two-holds:runway-clearance:2",
+      selected: false,
+      expectedStateVersion: 2,
+    });
+
+    expect(
+      application.command({
+        type: "dispatch-selected-clearance-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: 3,
+      }),
+    ).toEqual({
+      status: "success",
+      stateVersion: 4,
+      summary:
+        "Clearance Plan two-holds dispatched 1 selected clearance member.",
+      nextAction: "continue",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlanReference: undefined,
+      stagedClearancePlan: undefined,
+      transmissions: [
+        {
+          speaker: "controller",
+          aircraftId: "fc-101",
+          text: "FLOW 101, hold short runway 09.",
+        },
+      ],
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft.find(
+        ({ id }) => id === "fc-404",
+      ),
+    ).not.toHaveProperty("activeRunwayClearance");
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",
