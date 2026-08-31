@@ -1,5 +1,8 @@
 export type OperatingPosture = "observe" | "assist" | "take-the-sector";
 
+type ActionCategory = "runway-clearance" | "tactical-instruction";
+type CategoryOverride = "allowed" | "withheld";
+
 type StaticVfrWeather = {
   preset:
     | "light-northerly"
@@ -466,6 +469,7 @@ type OperationalReceipt = {
     | "operating-posture-increase-requested"
     | "operating-posture-increase-confirmed"
     | "capability-synchronization-completed"
+    | "category-override-updated"
     | "clearance-plan-staged";
   simulationTimeMs: number;
   stateVersionBefore: number;
@@ -483,6 +487,7 @@ type ApplicationState = {
   pendingPilotReadbacks: PendingPilotReadback[];
   nextTransmissionSequence: number;
   operatingPosture: OperatingPosture;
+  categoryOverrides: Partial<Record<ActionCategory, CategoryOverride>>;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -503,6 +508,7 @@ export type TowerSnapshot = Pick<
   aircraft: Aircraft[];
   runwayResources: RunwayResources;
   transmissions: Transmission[];
+  categoryOverrides: Partial<Record<ActionCategory, CategoryOverride>>;
   pendingOperatingPosture?: OperatingPosture;
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   stagedClearancePlanReference?: string;
@@ -560,6 +566,14 @@ type CompleteCapabilitySynchronizationCommand = {
   expectedStateVersion: number;
 };
 
+type SetCategoryOverrideCommand = {
+  type: "set-category-override";
+  actor: "supervising-controller";
+  category: ActionCategory;
+  disposition: CategoryOverride;
+  expectedStateVersion: number;
+};
+
 type RenewAgentLeaseCommand = {
   type: "renew-agent-lease";
   actor: "capability-registry";
@@ -606,6 +620,7 @@ type Command =
   | RequestOperatingPostureIncreaseCommand
   | ConfirmOperatingPostureIncreaseCommand
   | CompleteCapabilitySynchronizationCommand
+  | SetCategoryOverrideCommand
   | RenewAgentLeaseCommand
   | SetAgentWaitCommand
   | StageClearancePlanCommand
@@ -1087,7 +1102,10 @@ function advanceAircraftState(state: ApplicationState) {
   return transitionedCallsigns;
 }
 
-function activeCapabilities(posture: OperatingPosture): Capability[] {
+function activeCapabilities(
+  posture: OperatingPosture,
+  categoryOverrides: Partial<Record<ActionCategory, CategoryOverride>>,
+): Capability[] {
   if (posture === "observe") {
     return [...OBSERVE_CAPABILITIES];
   }
@@ -1099,10 +1117,12 @@ function activeCapabilities(posture: OperatingPosture): Capability[] {
   ];
 
   if (posture === "take-the-sector") {
-    capabilities.push(
-      "issue_runway_clearance",
-      "issue_tactical_instruction",
-    );
+    if (categoryOverrides["runway-clearance"] !== "withheld") {
+      capabilities.push("issue_runway_clearance");
+    }
+    if (categoryOverrides["tactical-instruction"] !== "withheld") {
+      capabilities.push("issue_tactical_instruction");
+    }
   }
 
   return capabilities;
@@ -1138,6 +1158,7 @@ export function createFlowControlApplication(options: {
   const state: ApplicationState = {
     ...initialState,
     ...scenario,
+    categoryOverrides: {},
     shiftStatus: "armed",
     simulationTimeMs: 0,
     stateVersion: 0,
@@ -1159,6 +1180,7 @@ export function createFlowControlApplication(options: {
       runwayResources: structuredClone(state.runwayResources),
       transmissions: structuredClone(state.transmissions),
       operatingPosture: state.operatingPosture,
+      categoryOverrides: structuredClone(state.categoryOverrides),
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,
       pendingOperatingPosture: state.pendingOperatingPosture,
@@ -1300,6 +1322,31 @@ export function createFlowControlApplication(options: {
         };
       }
 
+      if (command.type === "set-category-override") {
+        state.categoryOverrides = {
+          ...state.categoryOverrides,
+          [command.category]: command.disposition,
+        };
+        const stateVersionBefore = state.stateVersion;
+        state.stateVersion += 1;
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "category-override-updated",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `${command.category} is ${command.disposition} for the Tower Agent.`,
+          nextAction: "wait-for-tower-event" as const,
+        };
+      }
+
       if (command.type === "issue-runway-clearance") {
         if (
           command.actor === "tower-agent" &&
@@ -1312,6 +1359,19 @@ export function createFlowControlApplication(options: {
             rationale:
               `${POSTURE_LABELS[state.operatingPosture]} does not delegate runway Clearance dispatch to the Tower Agent.`,
             nextAction: "request-authority-increase" as const,
+          };
+        }
+        if (
+          command.actor === "tower-agent" &&
+          state.categoryOverrides["runway-clearance"] === "withheld"
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Runway Clearance is withheld by Category Override.",
+            rationale:
+              "The Supervising Controller withheld runway Clearance dispatch from the Tower Agent.",
+            nextAction: "wait-for-tower-event" as const,
           };
         }
 
@@ -1391,6 +1451,19 @@ export function createFlowControlApplication(options: {
             rationale:
               `${POSTURE_LABELS[state.operatingPosture]} does not delegate Tactical Instruction dispatch to the Tower Agent.`,
             nextAction: "request-authority-increase" as const,
+          };
+        }
+        if (
+          command.actor === "tower-agent" &&
+          state.categoryOverrides["tactical-instruction"] === "withheld"
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: "Tactical Instruction is withheld by Category Override.",
+            rationale:
+              "The Supervising Controller withheld Tactical Instruction dispatch from the Tower Agent.",
+            nextAction: "wait-for-tower-event" as const,
           };
         }
 
@@ -1614,16 +1687,25 @@ export function createFlowControlApplication(options: {
         case "available-capabilities":
           return state.shiftStatus === "armed"
             ? (["begin_tower_shift"] satisfies Capability[])
-            : activeCapabilities(state.operatingPosture);
+            : activeCapabilities(
+                state.operatingPosture,
+                state.categoryOverrides,
+              );
         case "tower-snapshot":
           return towerSnapshot();
         case "capabilities-to-register":
           return state.capabilitySynchronization === "pending" &&
             state.pendingOperatingPosture
-            ? activeCapabilities(state.pendingOperatingPosture)
+            ? activeCapabilities(
+                state.pendingOperatingPosture,
+                state.categoryOverrides,
+              )
             : state.shiftStatus === "armed"
               ? (["begin_tower_shift"] satisfies Capability[])
-              : activeCapabilities(state.operatingPosture);
+              : activeCapabilities(
+                  state.operatingPosture,
+                  state.categoryOverrides,
+                );
         case "operational-receipts":
           return [...state.operationalReceipts];
         case "transmissions":

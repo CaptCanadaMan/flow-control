@@ -256,6 +256,7 @@ describe("Shift lifecycle", () => {
         shiftStatus: "active",
         scenarioSeed: "phase-1-tracer",
         operatingPosture: "observe",
+        categoryOverrides: {},
         pendingOperatingPosture: undefined,
         capabilitySynchronization: undefined,
         stagedClearancePlanReference: undefined,
@@ -976,6 +977,59 @@ describe("Shift lifecycle", () => {
         },
       ]),
     ).toMatchObject({ valid: true, classification: "exceptional-recovery" });
+  });
+
+  it("applies a Category Override immediately to both Tower Agent capabilities and cached runway calls", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-category-override",
+      operatingPosture: "take-the-sector",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    expect(
+      application.command({
+        type: "set-category-override",
+        actor: "supervising-controller",
+        category: "runway-clearance",
+        disposition: "withheld",
+        expectedStateVersion: 1,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 2 });
+    expect(application.query({ type: "available-capabilities" })).toEqual([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+      "stage_clearance_plan",
+      "stage_recovery_plan",
+      "issue_tactical_instruction",
+    ]);
+
+    expect(
+      application.command({
+        type: "issue-runway-clearance",
+        actor: "tower-agent",
+        aircraftId: "fc-101",
+        clearance: {
+          kind: "clear-for-takeoff",
+          runwayId: "09-27",
+          runwayEnd: "09",
+        },
+        expectedStateVersion: 2,
+      }),
+    ).toEqual({
+      status: "refusal",
+      stateVersion: 2,
+      summary: "Runway Clearance is withheld by Category Override.",
+      rationale:
+        "The Supervising Controller withheld runway Clearance dispatch from the Tower Agent.",
+      nextAction: "wait-for-tower-event",
+    });
   });
 
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
