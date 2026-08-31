@@ -1183,6 +1183,56 @@ describe("Shift lifecycle", () => {
     );
   });
 
+  it("invalidates a staged plan when a manual Tactical Instruction changes the Shift", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-2-material-plan-invalidation",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "stage-clearance-plan",
+      actor: "tower-agent",
+      planReference: "departure-101",
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+      expectedStateVersion: 1,
+    });
+
+    expect(
+      application.command({
+        type: "issue-tactical-instruction",
+        actor: "supervising-controller",
+        aircraftId: "fc-202",
+        instruction: { headingDegrees: 120 },
+        expectedStateVersion: 2,
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 4 });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stagedClearancePlanReference: undefined,
+      stagedClearancePlan: undefined,
+    });
+    expect(application.query({ type: "operational-receipts" })).toContainEqual(
+      expect.objectContaining({
+        action: "clearance-plan-invalidated",
+        simulationTimeMs: 0,
+        stateVersionBefore: 3,
+        stateVersionAfter: 4,
+      }),
+    );
+  });
+
   it("refuses an unsafe runway Clearance before recording a Transmission or Operational Receipt", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-policy-hard-invariant",

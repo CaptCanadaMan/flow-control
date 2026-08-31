@@ -483,7 +483,9 @@ type OperationalReceipt = {
     | "clearance-plan-staged"
     | "recovery-plan-staged"
     | "clearance-plan-expired"
-    | "recovery-plan-expired";
+    | "recovery-plan-expired"
+    | "clearance-plan-invalidated"
+    | "recovery-plan-invalidated";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
@@ -923,6 +925,25 @@ function expireStagedPlans(state: ApplicationState) {
     expired.push("recovery-plan-expired");
   }
   return expired;
+}
+
+function invalidateStagedPlans(state: ApplicationState) {
+  const invalidated: Array<
+    Extract<
+      OperationalReceipt["action"],
+      "clearance-plan-invalidated" | "recovery-plan-invalidated"
+    >
+  > = [];
+  if (state.stagedClearancePlan) {
+    delete state.stagedClearancePlan;
+    delete state.stagedClearancePlanReference;
+    invalidated.push("clearance-plan-invalidated");
+  }
+  if (state.stagedRecoveryPlan) {
+    delete state.stagedRecoveryPlan;
+    invalidated.push("recovery-plan-invalidated");
+  }
+  return invalidated;
 }
 
 function evaluateRunwayClearanceSet(
@@ -1496,6 +1517,17 @@ export function createFlowControlApplication(options: {
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
+        for (const action of invalidateStagedPlans(state)) {
+          const stateVersionBefore = state.stateVersion;
+          state.stateVersion += 1;
+          state.operationalReceipts.push({
+            actor: command.actor,
+            action,
+            simulationTimeMs: state.simulationTimeMs,
+            stateVersionBefore,
+            stateVersionAfter: state.stateVersion,
+          });
+        }
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
 
@@ -1579,6 +1611,17 @@ export function createFlowControlApplication(options: {
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
         });
+        for (const action of invalidateStagedPlans(state)) {
+          const stateVersionBefore = state.stateVersion;
+          state.stateVersion += 1;
+          state.operationalReceipts.push({
+            actor: command.actor,
+            action,
+            simulationTimeMs: state.simulationTimeMs,
+            stateVersionBefore,
+            stateVersionAfter: state.stateVersion,
+          });
+        }
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
 
