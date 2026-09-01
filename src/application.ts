@@ -565,10 +565,24 @@ type OperationalReceipt = {
     | "clearance-plan-dispatched"
     | "clearance-plan-alternative-selected"
     | "clearance-plan-tactical-instruction-edited"
-    | "recovery-plan-approved-and-dispatched";
+    | "recovery-plan-approved-and-dispatched"
+    | "webmcp-tool-executed";
   simulationTimeMs: number;
   stateVersionBefore: number;
   stateVersionAfter: number;
+  summary?: string;
+  webMcp?: {
+    capability: Capability;
+    input: unknown;
+    result: Record<string, unknown>;
+    actor: "tower-agent";
+    authority: {
+      operatingPosture: OperatingPosture;
+      categoryOverrides: Partial<Record<ActionCategory, CategoryOverride>>;
+    };
+    startedAtWallClockMs: number;
+    durationMs: number;
+  };
 };
 
 type ApplicationState = {
@@ -605,6 +619,7 @@ export type TowerSnapshot = Pick<
   | "stateVersion"
   | "selectedAircraftId"
 > & {
+  eventCursor: number;
   simulationTimeMs: number;
   weather: StaticVfrWeather;
   airport: AirportGeometry;
@@ -712,6 +727,17 @@ type SetAgentWaitCommand = {
   active: boolean;
 };
 
+type RecordWebMcpToolExecutionCommand = {
+  type: "record-webmcp-tool-execution";
+  actor: "tower-agent";
+  capability: Capability;
+  input: unknown;
+  result: Record<string, unknown>;
+  stateVersionBefore: number;
+  startedAtWallClockMs: number;
+  durationMs: number;
+};
+
 type SelectAircraftCommand = {
   type: "select-aircraft";
   actor: "supervising-controller";
@@ -805,6 +831,7 @@ type Command =
   | SetCategoryOverrideCommand
   | RenewAgentLeaseCommand
   | SetAgentWaitCommand
+  | RecordWebMcpToolExecutionCommand
   | SelectAircraftCommand
   | StageClearancePlanCommand
   | StageRecoveryPlanCommand
@@ -834,6 +861,43 @@ function staleCommandSummary(commandType: Command["type"]) {
     return "Recovery Plan staging refused because the expected State Version is stale.";
   }
   return "Shift start refused because the expected State Version is stale.";
+}
+
+const NON_MONITORING_RECEIPT_ACTIONS = new Set<OperationalReceipt["action"]>([
+  "shift-began",
+  "webmcp-tool-executed",
+]);
+
+function monitoringReceipts(receipts: readonly OperationalReceipt[]) {
+  return receipts.filter(
+    ({ action, actor }) =>
+      actor !== "tower-agent" && !NON_MONITORING_RECEIPT_ACTIONS.has(action),
+  );
+}
+
+function monitoringEventAt(
+  receipts: readonly OperationalReceipt[],
+  cursor: number,
+) {
+  const receipt = monitoringReceipts(receipts)[cursor];
+  if (!receipt) {
+    return undefined;
+  }
+  const routineActions = new Set<OperationalReceipt["action"]>([
+    "aircraft-state-transition",
+    "runway-resources-transition",
+    "pilot-readback-received",
+  ]);
+  const actionRequired = !routineActions.has(receipt.action);
+  return {
+    eventKind: receipt.action,
+    priority: actionRequired ? ("attention" as const) : ("routine" as const),
+    cursor: cursor + 1,
+    stateVersion: receipt.stateVersionAfter,
+    simulationTime: receipt.simulationTimeMs,
+    summary: `${receipt.action.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase())}.`,
+    actionRequired,
+  };
 }
 
 const OBSERVE_CAPABILITIES: Capability[] = [
@@ -1566,6 +1630,7 @@ export function createFlowControlApplication(options: {
       categoryOverrides: structuredClone(state.categoryOverrides),
       simulationTimeMs: state.simulationTimeMs,
       stateVersion: state.stateVersion,
+      eventCursor: monitoringReceipts(state.operationalReceipts).length,
       pendingOperatingPosture: state.pendingOperatingPosture,
       capabilitySynchronization: state.capabilitySynchronization,
       stagedClearancePlanReference: state.stagedClearancePlanReference,
@@ -1585,6 +1650,7 @@ export function createFlowControlApplication(options: {
       shiftStatus: snapshot.shiftStatus,
       scenarioSeed: snapshot.scenarioSeed,
       stateVersion: snapshot.stateVersion,
+      eventCursor: snapshot.eventCursor,
       simulationTimeMs: snapshot.simulationTimeMs,
       selectedAircraftId: snapshot.selectedAircraftId,
       ...(selected.has("authority")
@@ -1716,6 +1782,40 @@ export function createFlowControlApplication(options: {
           summary: command.active
             ? "Tower Agent wait is active."
             : "Tower Agent wait completed.",
+          nextAction: "continue" as const,
+        };
+      }
+
+      if (command.type === "record-webmcp-tool-execution") {
+        state.operationalReceipts.push({
+          actor: command.actor,
+          action: "webmcp-tool-executed",
+          simulationTimeMs: state.simulationTimeMs,
+          stateVersionBefore: command.stateVersionBefore,
+          stateVersionAfter: state.stateVersion,
+          summary:
+            typeof command.result.summary === "string"
+              ? `${command.capability}: ${command.result.summary}`
+              : `${command.capability} execution recorded.`,
+          webMcp: {
+            capability: command.capability,
+            input: structuredClone(command.input),
+            result: structuredClone(command.result),
+            actor: command.actor,
+            authority: {
+              operatingPosture: state.operatingPosture,
+              categoryOverrides: structuredClone(state.categoryOverrides),
+            },
+            startedAtWallClockMs: command.startedAtWallClockMs,
+            durationMs: command.durationMs,
+          },
+        });
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `${command.capability} execution recorded.`,
           nextAction: "continue" as const,
         };
       }
@@ -2931,9 +3031,20 @@ export function createFlowControlApplication(options: {
               actionRequired: true,
             });
           }
+          {
+            const pendingEvent = monitoringEventAt(
+              state.operationalReceipts,
+              query.cursor,
+            );
+            if (pendingEvent) {
+              return Promise.resolve(pendingEvent);
+            }
+          }
           return new Promise((resolve) => {
+            let timer: ReturnType<typeof globalThis.setTimeout>;
             const finish = (result: Record<string, unknown>) => {
               query.signal?.removeEventListener("abort", cancel);
+              subscribers.delete(checkForEvent);
               resolve(result);
             };
             const cancel = () => {
@@ -2943,18 +3054,29 @@ export function createFlowControlApplication(options: {
                 priority: "routine",
                 cursor: query.cursor,
                 stateVersion: state.stateVersion,
-                simulationTime: 0,
+                simulationTime: state.simulationTimeMs,
                 summary: "Tower-event wait was cancelled.",
                 actionRequired: false,
               });
             };
-            const timer = globalThis.setTimeout(() => {
+            const checkForEvent = () => {
+              const event = monitoringEventAt(
+                state.operationalReceipts,
+                query.cursor,
+              );
+              if (event) {
+                globalThis.clearTimeout(timer);
+                finish(event);
+              }
+            };
+            subscribers.add(checkForEvent);
+            timer = globalThis.setTimeout(() => {
               finish({
                 eventKind: "heartbeat",
                 priority: "routine",
                 cursor: query.cursor,
                 stateVersion: state.stateVersion,
-                simulationTime: 0,
+                simulationTime: state.simulationTimeMs,
                 summary: "Tower Agent monitoring is current.",
                 actionRequired: false,
               });

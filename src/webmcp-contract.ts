@@ -239,11 +239,21 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   wait_for_tower_event: {
     description:
-      "Wait for a relevant tower event or a bounded monitoring heartbeat.",
+      "Wait from the supplied operational event cursor for the next material Shift change, cancellation, or bounded heartbeat. Reuse the returned cursor on the next call.",
     inputSchema: strictObjectSchema(
       {
-        cursor: { type: "integer", minimum: 0 },
-        heartbeatAfterMs: { type: "integer", minimum: 1 },
+        cursor: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "The last consumed operational event cursor from a snapshot or prior wait result.",
+        },
+        heartbeatAfterMs: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Maximum wall-clock wait before returning a routine heartbeat.",
+        },
       },
       ["cursor", "heartbeatAfterMs"],
     ),

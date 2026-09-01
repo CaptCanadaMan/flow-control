@@ -255,6 +255,7 @@ describe("Shift lifecycle", () => {
       snapshot: {
         shiftStatus: "active",
         scenarioSeed: "phase-1-tracer",
+        controllerScreenName: undefined,
         operatingPosture: "observe",
         categoryOverrides: {},
         pendingOperatingPosture: undefined,
@@ -262,6 +263,8 @@ describe("Shift lifecycle", () => {
         stagedClearancePlanReference: undefined,
         stagedClearancePlan: undefined,
         stagedRecoveryPlan: undefined,
+        selectedAircraftId: undefined,
+        eventCursor: 0,
         simulationTimeMs: 300,
         stateVersion: 1,
         weather: {

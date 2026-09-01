@@ -166,12 +166,38 @@ function resultEnvelope<T>({
   };
 }
 
+function compactAuditResult(value: unknown) {
+  if (typeof value !== "object" || value === null) {
+    return {
+      status: "unavailable",
+      summary: "Tool execution did not return a structured result.",
+    };
+  }
+  const result = value as Record<string, unknown>;
+  return Object.fromEntries(
+    [
+      "status",
+      "stateVersion",
+      "simulationTimeMs",
+      "affectedAircraft",
+      "summary",
+      "rationale",
+      "expiresAtSimulationTimeMs",
+      "nextAction",
+    ]
+      .filter((field) => result[field] !== undefined)
+      .map((field) => [field, structuredClone(result[field])]),
+  );
+}
+
 export async function connectWebMcp({
   application,
   modelContext,
+  wallClockNow = Date.now,
 }: {
   application: FlowControlApplication;
   modelContext: ModelContext;
+  wallClockNow?: () => number;
 }) {
   let lifecycles = [new AbortController()];
   let registeredCapabilities: string[] = [];
@@ -187,7 +213,61 @@ export async function connectWebMcp({
         if (!isWebMcpCapability(capability)) {
           throw new Error(`Unknown WebMCP capability: ${capability}`);
         }
-        return modelContext.registerTool(toolFor(capability), {
+        const tool = toolFor(capability);
+        const auditedTool: WebMcpTool = {
+          ...tool,
+          execute(input, context) {
+            const startedAtWallClockMs = wallClockNow();
+            const before = application.query({
+              type: "tower-snapshot",
+            }) as TowerSnapshot;
+            const record = (result: unknown) => {
+              application.command({
+                type: "record-webmcp-tool-execution",
+                actor: "tower-agent",
+                capability,
+                input: input ?? {},
+                result: compactAuditResult(result),
+                stateVersionBefore: before.stateVersion,
+                startedAtWallClockMs,
+                durationMs: Math.max(0, wallClockNow() - startedAtWallClockMs),
+              });
+              return result;
+            };
+            const recordFailure = (error: unknown) => {
+              application.command({
+                type: "record-webmcp-tool-execution",
+                actor: "tower-agent",
+                capability,
+                input: input ?? {},
+                result: {
+                  status: "unavailable",
+                  summary:
+                    error instanceof Error
+                      ? error.message
+                      : "Tool execution failed.",
+                },
+                stateVersionBefore: before.stateVersion,
+                startedAtWallClockMs,
+                durationMs: Math.max(0, wallClockNow() - startedAtWallClockMs),
+              });
+              throw error;
+            };
+
+            try {
+              const result = tool.execute(input, context);
+              return result &&
+                typeof result === "object" &&
+                "then" in result &&
+                typeof result.then === "function"
+                ? Promise.resolve(result).then(record, recordFailure)
+                : record(result);
+            } catch (error) {
+              return recordFailure(error);
+            }
+          },
+        };
+        return modelContext.registerTool(auditedTool, {
           signal: lifecycle.signal,
         });
       }),
