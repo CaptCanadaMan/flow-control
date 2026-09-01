@@ -106,7 +106,7 @@ export function App({
   }) => void;
   operationalReceipts?: readonly OperationalReceiptRecord[];
   onExportAudit?: () => void;
-  shiftStatus?: "armed" | "active";
+  shiftStatus?: "armed" | "active" | "completed" | "incomplete";
   stateVersion?: number;
   operatingPosture?: OperatingPosture;
   pendingOperatingPosture?: OperatingPosture;
@@ -273,7 +273,13 @@ export function App({
       <section aria-labelledby="shift-status">
         <p>WebMCP ready</p>
         <h2 id="shift-status">
-          {shiftStatus === "armed" ? "Shift armed" : "Tower Agent connected"}
+          {shiftStatus === "armed"
+            ? "Shift armed"
+            : shiftStatus === "completed"
+              ? "Shift complete"
+              : shiftStatus === "incomplete"
+                ? "Shift ended incomplete"
+                : "Tower Agent connected"}
         </h2>
         {shiftStatus === "armed" ? (
           <p>

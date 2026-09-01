@@ -125,11 +125,29 @@ describe("Phase 4 WebMCP read surface", () => {
       aircraftId: "fc-101",
     });
     application.command({
+      type: "issue-runway-clearance",
+      actor: "supervising-controller",
+      aircraftId: "fc-101",
+      clearance: {
+        kind: "clear-for-takeoff",
+        runwayId: "09-27",
+        runwayEnd: "09",
+      },
+      expectedStateVersion: (
+        application.query({ type: "tower-snapshot" }) as TowerSnapshot
+      ).stateVersion,
+    });
+    application.command({
       type: "advance-simulation",
       actor: "simulation-clock",
-      steps: 300,
+      steps: 3_500,
     });
 
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft.find(
+        ({ id }) => id === "fc-101",
+      ),
+    ).toMatchObject({ flightPhase: "out-of-play" });
     expect(application.query({ type: "selected-context" })).toMatchObject({
       selectionStatus: "unavailable",
       selectedAircraftId: "fc-101",
@@ -148,10 +166,27 @@ describe("Phase 4 WebMCP read surface", () => {
       expectedStateVersion: 0,
     });
     application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 100,
+      type: "issue-runway-clearance",
+      actor: "supervising-controller",
+      aircraftId: "fc-101",
+      clearance: {
+        kind: "clear-for-takeoff",
+        runwayId: "09-27",
+        runwayEnd: "09",
+      },
+      expectedStateVersion: 1,
     });
+    let occupiedSnapshot: TowerSnapshot;
+    do {
+      application.command({
+        type: "advance-simulation",
+        actor: "simulation-clock",
+        steps: 10,
+      });
+      occupiedSnapshot = application.query({
+        type: "tower-snapshot",
+      }) as TowerSnapshot;
+    } while (occupiedSnapshot.runwayResources.runwayOccupancy.length === 0);
 
     const snapshot = application.query({
       type: "tower-snapshot",
@@ -161,8 +196,8 @@ describe("Phase 4 WebMCP read surface", () => {
     expect(snapshot).toMatchObject({
       shiftStatus: "active",
       scenarioSeed: "phase-4-application-reads",
-      stateVersion: 3,
-      simulationTimeMs: 10_000,
+      stateVersion: occupiedSnapshot.stateVersion,
+      simulationTimeMs: occupiedSnapshot.simulationTimeMs,
       authority: { operatingPosture: "assist", categoryOverrides: {} },
       traffic: {
         aircraft: expect.arrayContaining([
@@ -182,15 +217,12 @@ describe("Phase 4 WebMCP read surface", () => {
         lookaheadMs: 180_000,
       }),
     ).toEqual({
-      asOfSimulationTimeMs: 10_000,
+      asOfSimulationTimeMs: occupiedSnapshot.simulationTimeMs,
       predictionHorizonMs: 180_000,
       current: [],
       predicted: [],
     });
-    expect(
-      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
-        .runwayResources.runwayOccupancy,
-    ).toEqual([
+    expect(occupiedSnapshot.runwayResources.runwayOccupancy).toEqual([
       expect.objectContaining({ runwayId: "09-27", aircraftId: "fc-101" }),
     ]);
   });

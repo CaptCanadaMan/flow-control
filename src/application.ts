@@ -333,35 +333,26 @@ type Transmission = {
 type PendingPilotReadback = {
   aircraftId: string;
   text: string;
+  kind: "readback" | "unable";
   dueAtSimulationTimeMs: number;
 };
 
-type AircraftLifecycle = {
-  operatingAtMs: number;
-  completeAtMs: number;
-  operatingFlightPhase: Extract<AircraftFlightPhase, "approach" | "circuit" | "departure">;
-  exit: "departed" | "landed";
-  runwayUse?: {
-    runwayId: "09-27" | "04-22";
-    operation: "departure" | "arrival";
-    beginsAtMs: number;
-    clearsAtMs: number;
-  };
+type RosterRole = "departure" | "arrival" | "circuit";
+
+type RosterAssignment = {
+  entersPlayAtMs: number;
+  role: RosterRole;
+  runwayId: "09-27" | "04-22";
+  runwayEnd: "09" | "27" | "04" | "22";
   aircraft: Aircraft;
 };
 
-const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
+const BASE_ROSTER: readonly RosterAssignment[] = [
   {
-    operatingAtMs: 10_000,
-    completeAtMs: 30_000,
-    operatingFlightPhase: "departure",
-    exit: "departed",
-    runwayUse: {
-      runwayId: "09-27",
-      operation: "departure",
-      beginsAtMs: 10_000,
-      clearsAtMs: 30_000,
-    },
+    entersPlayAtMs: 0,
+    role: "departure",
+    runwayId: "09-27",
+    runwayEnd: "09",
     aircraft: {
       id: "fc-101",
       callsign: "FLOW 101",
@@ -377,16 +368,10 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     },
   },
   {
-    operatingAtMs: 20_000,
-    completeAtMs: 40_000,
-    operatingFlightPhase: "approach",
-    exit: "landed",
-    runwayUse: {
-      runwayId: "04-22",
-      operation: "arrival",
-      beginsAtMs: 30_000,
-      clearsAtMs: 40_000,
-    },
+    entersPlayAtMs: 20_000,
+    role: "arrival",
+    runwayId: "04-22",
+    runwayEnd: "04",
     aircraft: {
       id: "fc-202",
       callsign: "FLOW 202",
@@ -402,16 +387,10 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     },
   },
   {
-    operatingAtMs: 30_000,
-    completeAtMs: 160_000,
-    operatingFlightPhase: "approach",
-    exit: "landed",
-    runwayUse: {
-      runwayId: "04-22",
-      operation: "arrival",
-      beginsAtMs: 150_000,
-      clearsAtMs: 160_000,
-    },
+    entersPlayAtMs: 40_000,
+    role: "arrival",
+    runwayId: "04-22",
+    runwayEnd: "22",
     aircraft: {
       id: "fc-303",
       callsign: "FLOW 303",
@@ -427,16 +406,10 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     },
   },
   {
-    operatingAtMs: 40_000,
-    completeAtMs: 150_000,
-    operatingFlightPhase: "departure",
-    exit: "departed",
-    runwayUse: {
-      runwayId: "09-27",
-      operation: "departure",
-      beginsAtMs: 40_000,
-      clearsAtMs: 150_000,
-    },
+    entersPlayAtMs: 0,
+    role: "departure",
+    runwayId: "09-27",
+    runwayEnd: "27",
     aircraft: {
       id: "fc-404",
       callsign: "FLOW 404",
@@ -452,16 +425,10 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     },
   },
   {
-    operatingAtMs: 50_000,
-    completeAtMs: 190_000,
-    operatingFlightPhase: "approach",
-    exit: "landed",
-    runwayUse: {
-      runwayId: "09-27",
-      operation: "arrival",
-      beginsAtMs: 180_000,
-      clearsAtMs: 190_000,
-    },
+    entersPlayAtMs: 60_000,
+    role: "arrival",
+    runwayId: "09-27",
+    runwayEnd: "27",
     aircraft: {
       id: "fc-505",
       callsign: "FLOW 505",
@@ -477,10 +444,10 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     },
   },
   {
-    operatingAtMs: 60_000,
-    completeAtMs: 210_000,
-    operatingFlightPhase: "circuit",
-    exit: "landed",
+    entersPlayAtMs: 10_000,
+    role: "circuit",
+    runwayId: "09-27",
+    runwayEnd: "09",
     aircraft: {
       id: "fc-106",
       callsign: "FLOW 106",
@@ -496,6 +463,220 @@ const INITIAL_AIRCRAFT_LIFECYCLES: readonly AircraftLifecycle[] = [
     },
   },
 ];
+
+type MapPoint = { eastNauticalMiles: number; northNauticalMiles: number };
+
+export type EventDeck = {
+  emergency: {
+    aircraftId: string;
+    declareAtSimulationTimeMs: number;
+    status: "pending" | "declared" | "resolved";
+    resolvedAtSimulationTimeMs?: number;
+  };
+  rejectedTakeoff: {
+    aircraftId: string;
+    rejectAfterRollMs: number;
+    status: "pending" | "armed" | "rejected" | "resolved";
+  };
+  independentGoAround: {
+    aircraftId: string;
+    status: "pending" | "executed" | "resolved";
+  };
+  temporaryLimitation: {
+    aircraftId: string;
+    activeFromSimulationTimeMs: number;
+    activeUntilSimulationTimeMs: number;
+    reason: string;
+    status: "pending" | "active" | "reported" | "expired";
+  };
+};
+
+type TrafficStage =
+  | "waiting"
+  | "hold-short"
+  | "lined-up"
+  | "takeoff-roll"
+  | "rejected"
+  | "climb-out"
+  | "inbound"
+  | "approach"
+  | "go-around"
+  | "rollout"
+  | "circuit"
+  | "done";
+
+type AircraftProgress = {
+  role: RosterRole;
+  entersPlayAtMs: number;
+  runwayId: "09-27" | "04-22";
+  runwayEnd: "09" | "27" | "04" | "22";
+  stage: TrafficStage;
+  waypoints: MapPoint[];
+  waypointIndex: number;
+  stageStartedAtMs: number;
+  approachAttempts: number;
+  committedToLand?: boolean;
+  forcedGoAroundOnNextGate?: boolean;
+  lapDecision?: "touch-and-go" | "full-stop" | "extend";
+};
+
+type OccupancyRecord = {
+  runwayId: "09-27" | "04-22";
+  aircraftId: string;
+  callsign: string;
+  operation: "departure" | "arrival";
+  wakeCategory: "light" | "medium" | "heavy";
+  beganAtSimulationTimeMs: number;
+  clearsAtSimulationTimeMs: number;
+};
+
+const FEET_PER_NAUTICAL_MILE = 6_076.12;
+const FINAL_APPROACH_FIX_DISTANCE_NM = 4;
+const LANDING_DECISION_GATE_NM = 1.2;
+const TAKEOFF_ROLL_DURATION_MS = 15_000;
+const DEPARTURE_OCCUPANCY_MS = 20_000;
+const ARRIVAL_OCCUPANCY_MS = 10_000;
+const TOUCH_AND_GO_OCCUPANCY_MS = 5_000;
+const LINE_UP_OCCUPANCY_MS = 120_000;
+const REJECTED_TAKEOFF_OCCUPANCY_MS = 75_000;
+const EVENT_SPACING_QUIET_PERIOD_MS = 20_000;
+const STABLE_FLOW_HOLD_MS = 15_000;
+
+function headingUnitVector(headingDegrees: number): MapPoint {
+  const radians = (headingDegrees * Math.PI) / 180;
+  return {
+    eastNauticalMiles: Math.sin(radians),
+    northNauticalMiles: Math.cos(radians),
+  };
+}
+
+function runwayEndHeadingDegrees(runwayEnd: "09" | "27" | "04" | "22") {
+  return Number(runwayEnd) * 10;
+}
+
+function runwayThreshold(
+  airport: AirportGeometry,
+  runwayId: "09-27" | "04-22",
+  runwayEnd: "09" | "27" | "04" | "22",
+): MapPoint {
+  const runway = airport.runways.find(({ id }) => id === runwayId);
+  if (!runway) {
+    throw new Error(`Unknown runway ${runwayId}.`);
+  }
+  const halfLengthNm = runway.lengthFeet / FEET_PER_NAUTICAL_MILE / 2;
+  const direction = headingUnitVector(runwayEndHeadingDegrees(runwayEnd));
+  return {
+    eastNauticalMiles:
+      runway.center.eastNauticalMiles - halfLengthNm * direction.eastNauticalMiles,
+    northNauticalMiles:
+      runway.center.northNauticalMiles - halfLengthNm * direction.northNauticalMiles,
+  };
+}
+
+function addScaled(origin: MapPoint, direction: MapPoint, distanceNm: number): MapPoint {
+  return {
+    eastNauticalMiles: origin.eastNauticalMiles + direction.eastNauticalMiles * distanceNm,
+    northNauticalMiles:
+      origin.northNauticalMiles + direction.northNauticalMiles * distanceNm,
+  };
+}
+
+function distanceBetween(first: MapPoint, second: MapPoint) {
+  return Math.hypot(
+    first.eastNauticalMiles - second.eastNauticalMiles,
+    first.northNauticalMiles - second.northNauticalMiles,
+  );
+}
+
+function headingTowards(from: MapPoint, to: MapPoint) {
+  const degrees =
+    (Math.atan2(
+      to.eastNauticalMiles - from.eastNauticalMiles,
+      to.northNauticalMiles - from.northNauticalMiles,
+    ) *
+      180) /
+    Math.PI;
+  return (degrees + 360) % 360;
+}
+
+function finalApproachFix(
+  airport: AirportGeometry,
+  runwayId: "09-27" | "04-22",
+  runwayEnd: "09" | "27" | "04" | "22",
+): MapPoint {
+  const threshold = runwayThreshold(airport, runwayId, runwayEnd);
+  const approachDirection = headingUnitVector(runwayEndHeadingDegrees(runwayEnd));
+  return addScaled(threshold, approachDirection, -FINAL_APPROACH_FIX_DISTANCE_NM);
+}
+
+function missedApproachWaypoints(
+  airport: AirportGeometry,
+  runwayId: "09-27" | "04-22",
+  runwayEnd: "09" | "27" | "04" | "22",
+): MapPoint[] {
+  const runway = airport.runways.find(({ id }) => id === runwayId);
+  if (!runway) {
+    throw new Error(`Unknown runway ${runwayId}.`);
+  }
+  const flightDirection = headingUnitVector(runwayEndHeadingDegrees(runwayEnd));
+  const leftOffset = headingUnitVector(runwayEndHeadingDegrees(runwayEnd) - 90);
+  const threshold = runwayThreshold(airport, runwayId, runwayEnd);
+  const runwayLengthNm = runway.lengthFeet / FEET_PER_NAUTICAL_MILE;
+  const departureEnd = addScaled(threshold, flightDirection, runwayLengthNm + 0.3);
+  const crosswindTurn = addScaled(departureEnd, leftOffset, 1);
+  const shortFinalFix = addScaled(threshold, flightDirection, -2.2);
+  const rejoin = addScaled(shortFinalFix, leftOffset, 1);
+  return [departureEnd, crosswindTurn, rejoin, shortFinalFix];
+}
+
+function circuitDefinitionFor(
+  airport: AirportGeometry,
+  runwayId: "09-27" | "04-22",
+  runwayEnd: "09" | "27" | "04" | "22",
+) {
+  const circuit = airport.circuits.find(
+    (candidate) =>
+      candidate.runwayId === runwayId && candidate.runwayEnd === runwayEnd,
+  );
+  if (!circuit) {
+    throw new Error(`No circuit is published for runway ${runwayEnd}.`);
+  }
+  return circuit;
+}
+
+function circuitLoopWaypoints(
+  airport: AirportGeometry,
+  runwayId: "09-27" | "04-22",
+  runwayEnd: "09" | "27" | "04" | "22",
+): MapPoint[] {
+  const circuit = circuitDefinitionFor(airport, runwayId, runwayEnd);
+  return circuit.legs.map(({ to }) => ({ ...to }));
+}
+
+function circuitEntryWaypoints(
+  airport: AirportGeometry,
+  runwayId: "09-27" | "04-22",
+  runwayEnd: "09" | "27" | "04" | "22",
+): MapPoint[] {
+  const circuit = circuitDefinitionFor(airport, runwayId, runwayEnd);
+  return circuit.legs
+    .filter(({ id }) => id === "downwind" || id === "base" || id === "final")
+    .map(({ to }) => ({ ...to }));
+}
+
+function initialProgressFor(assignment: RosterAssignment): AircraftProgress {
+  return {
+    role: assignment.role,
+    entersPlayAtMs: assignment.entersPlayAtMs,
+    runwayId: assignment.runwayId,
+    runwayEnd: assignment.runwayEnd,
+    stage: assignment.role === "departure" ? "hold-short" : "waiting",
+    waypoints: [],
+    waypointIndex: 0,
+    stageStartedAtMs: 0,
+    approachAttempts: 0,
+  };
+}
 
 type RunwayResources = {
   runwayOccupancy: Array<{
@@ -566,6 +747,12 @@ type OperationalReceipt = {
     | "clearance-plan-alternative-selected"
     | "clearance-plan-tactical-instruction-edited"
     | "recovery-plan-approved-and-dispatched"
+    | "pilot-go-around-executed"
+    | "emergency-declared"
+    | "takeoff-rejected"
+    | "pilot-unable-reported"
+    | "stable-flow-restored"
+    | "shift-completed"
     | "webmcp-tool-executed";
   simulationTimeMs: number;
   stateVersionBefore: number;
@@ -592,6 +779,9 @@ type ApplicationState = {
   airport: AirportGeometry;
   aircraftCapabilityProfiles: AircraftCapabilityProfiles;
   aircraft: Aircraft[];
+  aircraftProgress: Record<string, AircraftProgress>;
+  runwayOccupancies: OccupancyRecord[];
+  eventDeck: EventDeck;
   runwayResources: RunwayResources;
   transmissions: Transmission[];
   pendingPilotReadbacks: PendingPilotReadback[];
@@ -604,9 +794,10 @@ type ApplicationState = {
   stagedClearancePlan?: ClearancePlan;
   stagedRecoveryPlan?: RecoveryPlan;
   selectedAircraftId?: string;
-  shiftStatus: "armed" | "active";
+  shiftStatus: "armed" | "active" | "completed" | "incomplete";
   simulationTimeMs: number;
   stateVersion: number;
+  stableSinceSimulationTimeMs?: number;
   operationalReceipts: OperationalReceipt[];
 };
 
@@ -977,15 +1168,116 @@ function selectStaticVfrWeather(random: () => number): StaticVfrWeather {
   return { ...preset };
 }
 
-function generateScenario(scenarioSeed: string) {
-  const random = createSeededRandom(scenarioSeed);
+export const FIRST_LAUNCH_SCENARIO_SEED = "flow-first-shift";
+
+function seededSeventhAircraft(random: () => number): RosterAssignment {
+  if (random() < 0.5) {
+    return {
+      entersPlayAtMs: 90_000 + Math.floor(random() * 20) * 1_000,
+      role: "circuit",
+      runwayId: "09-27",
+      runwayEnd: "09",
+      aircraft: {
+        id: "fc-108",
+        callsign: "FLOW 108",
+        capabilityProfileId: "cessna-172",
+        position: { eastNauticalMiles: 1.6, northNauticalMiles: 1.5 },
+        trackDegrees: 270,
+        headingDegrees: 270,
+        altitudeFeet: 1_000,
+        speedKnots: 90,
+        flightPhase: "circuit",
+        intention: "circuit",
+        pilotState: "monitoring",
+      },
+    };
+  }
   return {
-    weather: selectStaticVfrWeather(random),
+    entersPlayAtMs: 100_000 + Math.floor(random() * 20) * 1_000,
+    role: "arrival",
+    runwayId: "09-27",
+    runwayEnd: "27",
+    aircraft: {
+      id: "fc-207",
+      callsign: "FLOW 207",
+      capabilityProfileId: "king-air-350",
+      position: { eastNauticalMiles: 6.5, northNauticalMiles: -2 },
+      trackDegrees: 320,
+      headingDegrees: 320,
+      altitudeFeet: 3_000,
+      speedKnots: 180,
+      flightPhase: "inbound",
+      intention: "arrival",
+      pilotState: "awaiting-contact",
+    },
+  };
+}
+
+export function generateScenario(scenarioSeed: string) {
+  const random = createSeededRandom(scenarioSeed);
+  const weather = selectStaticVfrWeather(random);
+  const roster: RosterAssignment[] = BASE_ROSTER.map((assignment) => ({
+    ...assignment,
+    entersPlayAtMs:
+      assignment.role === "departure"
+        ? 0
+        : assignment.entersPlayAtMs + Math.floor(random() * 20) * 1_000,
+    aircraft: structuredClone(assignment.aircraft),
+  }));
+  roster.push(seededSeventhAircraft(random));
+
+  const arrivals = roster.filter(({ role }) => role === "arrival");
+  const departures = roster.filter(({ role }) => role === "departure");
+  const circuits = roster.filter(({ role }) => role === "circuit");
+  const emergency = arrivals[Math.floor(random() * arrivals.length)];
+  const independentCandidates = arrivals.filter(
+    (candidate) => candidate !== emergency,
+  );
+  const independent =
+    independentCandidates[
+      Math.floor(random() * independentCandidates.length)
+    ];
+  const rejected = departures[Math.floor(random() * departures.length)];
+  const limited = circuits[Math.floor(random() * circuits.length)];
+  const declareAtSimulationTimeMs =
+    emergency.entersPlayAtMs + 10_000 + Math.floor(random() * 10) * 1_000;
+  const eventDeck: EventDeck = {
+    emergency: {
+      aircraftId: emergency.aircraft.id,
+      declareAtSimulationTimeMs,
+      status: "pending",
+    },
+    rejectedTakeoff: {
+      aircraftId: rejected.aircraft.id,
+      rejectAfterRollMs: 6_000 + Math.floor(random() * 4) * 1_000,
+      status: "pending",
+    },
+    independentGoAround: {
+      aircraftId: independent.aircraft.id,
+      status: "pending",
+    },
+    temporaryLimitation: {
+      aircraftId: limited.aircraft.id,
+      activeFromSimulationTimeMs: declareAtSimulationTimeMs,
+      activeUntilSimulationTimeMs: declareAtSimulationTimeMs + 90_000,
+      reason: "student pilot, unable to manoeuvre",
+      status: "pending",
+    },
+  };
+
+  return {
+    weather,
     airport: structuredClone(FLOW_FIELD_GEOMETRY),
     aircraftCapabilityProfiles: structuredClone(AIRCRAFT_CAPABILITY_PROFILES),
-    aircraft: structuredClone(
-      INITIAL_AIRCRAFT_LIFECYCLES.map(({ aircraft }) => aircraft),
+    aircraft: roster.map(({ aircraft }) => aircraft),
+    aircraftProgress: Object.fromEntries(
+      roster.map((assignment) => [
+        assignment.aircraft.id,
+        initialProgressFor(assignment),
+      ]),
     ),
+    runwayOccupancies: [] as OccupancyRecord[],
+    eventDeck,
     runwayResources: { runwayOccupancy: [], intersectionOccupancy: [] },
     transmissions: [],
     pendingPilotReadbacks: [],
@@ -1074,10 +1366,12 @@ function queuePilotReadback(
   state: ApplicationState,
   aircraftId: string,
   text: string,
+  kind: PendingPilotReadback["kind"] = "readback",
 ) {
   state.pendingPilotReadbacks.push({
     aircraftId,
     text,
+    kind,
     dueAtSimulationTimeMs: state.simulationTimeMs + 1_000,
   });
 }
@@ -1093,9 +1387,18 @@ function deliverDuePilotReadbacks(state: ApplicationState) {
   );
   for (const readback of dueReadbacks) {
     appendTransmission(state, "pilot", readback.aircraftId, readback.text);
+    if (readback.kind === "unable") {
+      state.eventDeck.temporaryLimitation.status =
+        state.eventDeck.temporaryLimitation.aircraftId === readback.aircraftId
+          ? "reported"
+          : state.eventDeck.temporaryLimitation.status;
+    }
     state.aircraft = state.aircraft.map((aircraft) =>
       aircraft.id === readback.aircraftId && aircraft.flightPhase !== "out-of-play"
-        ? { ...aircraft, pilotState: "operating" }
+        ? {
+            ...aircraft,
+            pilotState: readback.kind === "unable" ? "monitoring" : "operating",
+          }
         : aircraft,
     );
   }
@@ -1103,25 +1406,24 @@ function deliverDuePilotReadbacks(state: ApplicationState) {
 }
 
 function runwayResourcesAt(
-  airport: AirportGeometry,
+  state: ApplicationState,
   simulationTimeMs: number,
 ): RunwayResources {
-  const runwayOccupancy = INITIAL_AIRCRAFT_LIFECYCLES.flatMap((lifecycle) => {
-    const runwayUse = lifecycle.runwayUse;
+  const airport = state.airport;
+  const runwayOccupancy = state.runwayOccupancies.flatMap((occupancy) => {
     if (
-      !runwayUse ||
-      simulationTimeMs < runwayUse.beginsAtMs ||
-      simulationTimeMs >= runwayUse.clearsAtMs
+      simulationTimeMs < occupancy.beganAtSimulationTimeMs ||
+      simulationTimeMs >= occupancy.clearsAtSimulationTimeMs
     ) {
       return [];
     }
     return [
       {
-        runwayId: runwayUse.runwayId,
-        aircraftId: lifecycle.aircraft.id,
-        callsign: lifecycle.aircraft.callsign,
-        operation: runwayUse.operation,
-        clearsAtSimulationTimeMs: runwayUse.clearsAtMs,
+        runwayId: occupancy.runwayId,
+        aircraftId: occupancy.aircraftId,
+        callsign: occupancy.callsign,
+        operation: occupancy.operation,
+        clearsAtSimulationTimeMs: occupancy.clearsAtSimulationTimeMs,
       },
     ];
   });
@@ -1156,10 +1458,70 @@ function activeConflictsAt(
     lookaheadMs?: number;
   } = {},
 ) {
-  const scheduledRunwayUses = INITIAL_AIRCRAFT_LIFECYCLES.flatMap(
-    ({ aircraft, runwayUse }) =>
-      runwayUse ? [{ aircraftId: aircraft.id, ...runwayUse }] : [],
-  );
+  const occupancyWindows = state.runwayOccupancies
+    .filter(
+      ({ clearsAtSimulationTimeMs }) =>
+        clearsAtSimulationTimeMs > state.simulationTimeMs,
+    )
+    .map((occupancy) => ({
+      aircraftId: occupancy.aircraftId,
+      runwayId: occupancy.runwayId,
+      beginsAtMs: occupancy.beganAtSimulationTimeMs,
+      clearsAtMs: occupancy.clearsAtSimulationTimeMs,
+    }));
+  const predictedDemands = state.aircraft.flatMap((aircraft) => {
+    const clearance = aircraft.activeRunwayClearance;
+    const progress = state.aircraftProgress[aircraft.id];
+    if (!clearance || !progress || aircraft.flightPhase === "out-of-play") {
+      return [];
+    }
+    if (
+      clearance.kind === "clear-to-land" &&
+      (progress.stage === "inbound" ||
+        progress.stage === "approach" ||
+        progress.stage === "go-around")
+    ) {
+      const threshold = runwayThreshold(
+        state.airport,
+        progress.runwayId,
+        progress.runwayEnd,
+      );
+      const distanceNm = distanceBetween(aircraft.position, threshold);
+      const speedKnots = Math.max(aircraft.speedKnots, 60);
+      const etaMs = (distanceNm / speedKnots) * 3_600_000;
+      return [
+        {
+          aircraftId: aircraft.id,
+          runwayId: clearance.runwayId,
+          beginsAtMs: state.simulationTimeMs + etaMs,
+          clearsAtMs: state.simulationTimeMs + etaMs + ARRIVAL_OCCUPANCY_MS,
+        },
+      ];
+    }
+    if (
+      clearance.kind === "clear-for-takeoff" &&
+      (progress.stage === "hold-short" || progress.stage === "lined-up")
+    ) {
+      return [
+        {
+          aircraftId: aircraft.id,
+          runwayId: clearance.runwayId,
+          beginsAtMs: state.simulationTimeMs + 2_000,
+          clearsAtMs: state.simulationTimeMs + 2_000 + DEPARTURE_OCCUPANCY_MS,
+        },
+      ];
+    }
+    return [];
+  });
+  const scheduledRunwayUses = [
+    ...occupancyWindows,
+    ...predictedDemands.filter(
+      (demand) =>
+        !occupancyWindows.some(
+          ({ aircraftId }) => aircraftId === demand.aircraftId,
+        ),
+    ),
+  ];
   const conflicts: ActiveConflict[] = [];
 
   for (
@@ -1257,10 +1619,7 @@ function activeConflictsAt(
 }
 
 function advanceRunwayResources(state: ApplicationState) {
-  const nextResources = runwayResourcesAt(
-    state.airport,
-    state.simulationTimeMs,
-  );
+  const nextResources = runwayResourcesAt(state, state.simulationTimeMs);
   if (
     JSON.stringify(nextResources) === JSON.stringify(state.runwayResources)
   ) {
@@ -1320,13 +1679,26 @@ function evaluateRunwayClearanceSet(
   runwayClearances: CandidateRunwayClearance[],
   effectiveAtSimulationTimeMs = state.simulationTimeMs,
 ) {
-  const classification: ActionClassification = runwayClearances.some(
-    ({ clearance }) => clearance.kind === "go-around",
-  )
-    ? runwayClearances.length > 1
+  const hasProtectiveClearance = runwayClearances.some(
+    ({ clearance }) =>
+      clearance.kind === "go-around" ||
+      clearance.kind === "cancel-runway-clearance",
+  );
+  const deckDisrupted =
+    state.eventDeck.emergency.status === "declared" ||
+    state.eventDeck.rejectedTakeoff.status === "rejected";
+  const declaredEmergencyAircraftId =
+    state.eventDeck.emergency.status === "declared"
+      ? state.eventDeck.emergency.aircraftId
+      : undefined;
+  const classification: ActionClassification =
+    runwayClearances.length > 1 && (hasProtectiveClearance || deckDisrupted)
       ? "exceptional-recovery"
-      : "elevated"
-    : "routine";
+      : hasProtectiveClearance ||
+          (runwayClearances.length === 1 &&
+            runwayClearances[0].aircraftId === declaredEmergencyAircraftId)
+        ? "elevated"
+        : "routine";
   const conflicts: Array<{
     kind: "runway-occupied" | "intersection-occupied";
     resourceId: string;
@@ -1348,7 +1720,7 @@ function evaluateRunwayClearanceSet(
   }> = [];
   const mustIssueBy: number[] = [];
   const projectedResources = runwayResourcesAt(
-    state.airport,
+    state,
     effectiveAtSimulationTimeMs,
   );
 
@@ -1381,32 +1753,27 @@ function evaluateRunwayClearanceSet(
       });
     }
 
-    const precedingRunwayUse = INITIAL_AIRCRAFT_LIFECYCLES.flatMap(
-      (lifecycle) =>
-        lifecycle.runwayUse &&
-        lifecycle.runwayUse.runwayId === candidate.clearance.runwayId &&
-        lifecycle.aircraft.id !== candidate.aircraftId &&
-        lifecycle.runwayUse.clearsAtMs <= effectiveAtSimulationTimeMs
-          ? [lifecycle]
-          : [],
-    ).sort(
-      (first, second) =>
-        (second.runwayUse?.clearsAtMs ?? 0) -
-        (first.runwayUse?.clearsAtMs ?? 0),
-    )[0];
-    const leadingProfile = state.aircraftCapabilityProfiles.find(
-      ({ id }) => id === precedingRunwayUse?.aircraft.capabilityProfileId,
-    );
-    if (precedingRunwayUse?.runwayUse && leadingProfile) {
+    const precedingRelease = state.runwayOccupancies
+      .filter(
+        (occupancy) =>
+          occupancy.runwayId === candidate.clearance.runwayId &&
+          occupancy.aircraftId !== candidate.aircraftId &&
+          occupancy.clearsAtSimulationTimeMs <= effectiveAtSimulationTimeMs,
+      )
+      .sort(
+        (first, second) =>
+          second.clearsAtSimulationTimeMs - first.clearsAtSimulationTimeMs,
+      )[0];
+    if (precedingRelease) {
       const availableSpacingMs =
-        effectiveAtSimulationTimeMs - precedingRunwayUse.runwayUse.clearsAtMs;
+        effectiveAtSimulationTimeMs - precedingRelease.clearsAtSimulationTimeMs;
       const requiredSpacingMs =
-        WAKE_SPACING_AFTER_MS[leadingProfile.wakeCategory];
+        WAKE_SPACING_AFTER_MS[precedingRelease.wakeCategory];
       if (availableSpacingMs < requiredSpacingMs) {
         constraints.push({
           kind: "wake-separation",
           resourceId: candidate.clearance.runwayId,
-          leaderAircraftId: precedingRunwayUse.aircraft.id,
+          leaderAircraftId: precedingRelease.aircraftId,
           followerAircraftId: candidate.aircraftId,
           requiredSpacingMs,
           availableSpacingMs,
@@ -1510,41 +1877,798 @@ function evaluateRunwayClearanceSet(
   };
 }
 
-function advanceAircraftState(state: ApplicationState) {
-  const transitionedCallsigns: string[] = [];
-  state.aircraft = state.aircraft.map((aircraft) => {
-    const lifecycle = INITIAL_AIRCRAFT_LIFECYCLES.find(
-      ({ aircraft: initialAircraft }) => initialAircraft.id === aircraft.id,
+type TrafficEvent =
+  | { kind: "aircraft-state-transition"; callsign: string }
+  | {
+      kind: "pilot-go-around-executed";
+      aircraftId: string;
+      callsign: string;
+      summary: string;
+    };
+
+function capabilityProfileFor(state: ApplicationState, aircraft: Aircraft) {
+  const profile = state.aircraftCapabilityProfiles.find(
+    ({ id }) => id === aircraft.capabilityProfileId,
+  );
+  if (!profile) {
+    throw new Error(`Unknown capability profile for ${aircraft.id}.`);
+  }
+  return profile;
+}
+
+function runwayBlockedForLanding(
+  state: ApplicationState,
+  runwayId: "09-27" | "04-22",
+  landingAircraftId: string,
+) {
+  return state.runwayOccupancies.some(
+    (occupancy) =>
+      occupancy.aircraftId !== landingAircraftId &&
+      occupancy.beganAtSimulationTimeMs <= state.simulationTimeMs &&
+      occupancy.clearsAtSimulationTimeMs > state.simulationTimeMs &&
+      (occupancy.runwayId === runwayId ||
+        state.airport.intersections.some(
+          ({ runwayIds }) =>
+            runwayIds.includes(runwayId) &&
+            runwayIds.includes(occupancy.runwayId),
+        )),
+  );
+}
+
+function moveTowardsWaypoints(
+  aircraft: Aircraft,
+  progress: AircraftProgress,
+  distanceNm: number,
+): { position: MapPoint; headingDegrees: number; arrived: boolean } {
+  let position = { ...aircraft.position };
+  let headingDegrees = aircraft.headingDegrees;
+  let remainingNm = distanceNm;
+  while (remainingNm > 0 && progress.waypointIndex < progress.waypoints.length) {
+    const target = progress.waypoints[progress.waypointIndex];
+    const legDistanceNm = distanceBetween(position, target);
+    if (legDistanceNm <= remainingNm) {
+      position = { ...target };
+      progress.waypointIndex += 1;
+      remainingNm -= legDistanceNm;
+      continue;
+    }
+    headingDegrees = headingTowards(position, target);
+    const direction = headingUnitVector(headingDegrees);
+    position = addScaled(position, direction, remainingNm);
+    remainingNm = 0;
+  }
+  if (progress.waypointIndex < progress.waypoints.length) {
+    headingDegrees = headingTowards(
+      position,
+      progress.waypoints[progress.waypointIndex],
     );
-    if (!lifecycle || aircraft.flightPhase === "out-of-play") {
+  }
+  return {
+    position,
+    headingDegrees,
+    arrived: progress.waypointIndex >= progress.waypoints.length,
+  };
+}
+
+function beginGoAround(
+  state: ApplicationState,
+  aircraft: Aircraft,
+  progress: AircraftProgress,
+) {
+  progress.stage = "go-around";
+  progress.waypoints = missedApproachWaypoints(
+    state.airport,
+    progress.runwayId,
+    progress.runwayEnd,
+  );
+  progress.waypointIndex = 0;
+  progress.stageStartedAtMs = state.simulationTimeMs;
+  progress.approachAttempts += 1;
+  delete progress.forcedGoAroundOnNextGate;
+}
+
+type DeckEvent = {
+  action: "emergency-declared" | "takeoff-rejected";
+  summary: string;
+};
+
+function currentRunwayConflictCount(state: ApplicationState) {
+  const activeOccupancies = state.runwayOccupancies.filter(
+    (occupancy) =>
+      occupancy.beganAtSimulationTimeMs <= state.simulationTimeMs &&
+      occupancy.clearsAtSimulationTimeMs > state.simulationTimeMs,
+  );
+  let conflictCount = 0;
+  for (let first = 0; first < activeOccupancies.length; first += 1) {
+    for (
+      let second = first + 1;
+      second < activeOccupancies.length;
+      second += 1
+    ) {
+      const sameRunway =
+        activeOccupancies[first].runwayId === activeOccupancies[second].runwayId;
+      const sharedIntersection = state.airport.intersections.some(
+        ({ runwayIds }) =>
+          runwayIds.includes(activeOccupancies[first].runwayId) &&
+          runwayIds.includes(activeOccupancies[second].runwayId),
+      );
+      if (sameRunway || sharedIntersection) {
+        conflictCount += 1;
+      }
+    }
+  }
+  return conflictCount;
+}
+
+function trafficDisrupted(state: ApplicationState) {
+  return Object.values(state.aircraftProgress).some(
+    ({ stage }) => stage === "go-around" || stage === "rejected",
+  );
+}
+
+function recoverySubstantiallyUnderway(state: ApplicationState) {
+  const emergency = state.eventDeck.emergency;
+  if (emergency.status !== "resolved") {
+    return false;
+  }
+  if (
+    state.operationalReceipts.some(
+      (receipt) =>
+        receipt.action === "recovery-plan-approved-and-dispatched" &&
+        receipt.simulationTimeMs >= emergency.declareAtSimulationTimeMs,
+    )
+  ) {
+    return true;
+  }
+  const resolvedAt =
+    emergency.resolvedAtSimulationTimeMs ?? Number.POSITIVE_INFINITY;
+  return (
+    state.simulationTimeMs - resolvedAt >= EVENT_SPACING_QUIET_PERIOD_MS &&
+    !trafficDisrupted(state) &&
+    currentRunwayConflictCount(state) === 0
+  );
+}
+
+function runEventDeck(state: ApplicationState): DeckEvent[] {
+  const events: DeckEvent[] = [];
+  const deck = state.eventDeck;
+
+  const emergencyAircraft = state.aircraft.find(
+    ({ id }) => id === deck.emergency.aircraftId,
+  );
+  if (
+    deck.emergency.status === "pending" &&
+    state.simulationTimeMs >= deck.emergency.declareAtSimulationTimeMs
+  ) {
+    if (!emergencyAircraft || emergencyAircraft.flightPhase === "out-of-play") {
+      deck.emergency.status = "resolved";
+      deck.emergency.resolvedAtSimulationTimeMs = state.simulationTimeMs;
+    } else {
+      deck.emergency.status = "declared";
+      appendTransmission(
+        state,
+        "pilot",
+        emergencyAircraft.id,
+        `MAYDAY, MAYDAY, MAYDAY, ${emergencyAircraft.callsign}, engine failure, requesting immediate landing.`,
+      );
+      events.push({
+        action: "emergency-declared",
+        summary: `${emergencyAircraft.callsign} declared an emergency inbound and requires priority handling.`,
+      });
+    }
+  } else if (
+    deck.emergency.status === "declared" &&
+    emergencyAircraft?.flightPhase === "out-of-play"
+  ) {
+    deck.emergency.status = "resolved";
+    deck.emergency.resolvedAtSimulationTimeMs = state.simulationTimeMs;
+  }
+
+  if (
+    deck.rejectedTakeoff.status === "pending" &&
+    recoverySubstantiallyUnderway(state)
+  ) {
+    const castProgress = state.aircraftProgress[deck.rejectedTakeoff.aircraftId];
+    const castStillDeparting =
+      castProgress?.role === "departure" &&
+      (castProgress.stage === "hold-short" ||
+        castProgress.stage === "lined-up" ||
+        castProgress.stage === "takeoff-roll");
+    if (castStillDeparting) {
+      deck.rejectedTakeoff.status = "armed";
+    } else {
+      const replacement = Object.entries(state.aircraftProgress).find(
+        ([, progress]) =>
+          progress.role === "departure" &&
+          (progress.stage === "hold-short" || progress.stage === "lined-up"),
+      );
+      if (replacement) {
+        deck.rejectedTakeoff.aircraftId = replacement[0];
+        deck.rejectedTakeoff.status = "armed";
+      } else {
+        deck.rejectedTakeoff.status = "resolved";
+      }
+    }
+  }
+  const rejectedProgress = state.aircraftProgress[deck.rejectedTakeoff.aircraftId];
+  const rejectedAircraft = state.aircraft.find(
+    ({ id }) => id === deck.rejectedTakeoff.aircraftId,
+  );
+  if (
+    deck.rejectedTakeoff.status === "armed" &&
+    rejectedProgress?.stage === "takeoff-roll" &&
+    rejectedAircraft &&
+    state.simulationTimeMs - rejectedProgress.stageStartedAtMs >=
+      deck.rejectedTakeoff.rejectAfterRollMs
+  ) {
+    deck.rejectedTakeoff.status = "rejected";
+    rejectedProgress.stage = "rejected";
+    rejectedProgress.stageStartedAtMs = state.simulationTimeMs;
+    for (const occupancy of state.runwayOccupancies) {
+      if (
+        occupancy.aircraftId === rejectedAircraft.id &&
+        occupancy.clearsAtSimulationTimeMs > state.simulationTimeMs
+      ) {
+        occupancy.clearsAtSimulationTimeMs =
+          state.simulationTimeMs + REJECTED_TAKEOFF_OCCUPANCY_MS;
+      }
+    }
+    appendTransmission(
+      state,
+      "pilot",
+      rejectedAircraft.id,
+      `${rejectedAircraft.callsign}, rejecting takeoff.`,
+    );
+    events.push({
+      action: "takeoff-rejected",
+      summary: `${rejectedAircraft.callsign} rejected takeoff; runway ${rejectedProgress.runwayId} remains occupied.`,
+    });
+  } else if (
+    deck.rejectedTakeoff.status === "rejected" &&
+    rejectedAircraft?.exit === "departed"
+  ) {
+    deck.rejectedTakeoff.status = "resolved";
+  }
+
+  if (deck.independentGoAround.status === "executed") {
+    const independentAircraft = state.aircraft.find(
+      ({ id }) => id === deck.independentGoAround.aircraftId,
+    );
+    if (independentAircraft?.flightPhase === "out-of-play") {
+      deck.independentGoAround.status = "resolved";
+    }
+  }
+
+  const limitation = deck.temporaryLimitation;
+  if (
+    limitation.status !== "expired" &&
+    state.simulationTimeMs >= limitation.activeUntilSimulationTimeMs
+  ) {
+    limitation.status = "expired";
+  } else if (
+    limitation.status === "pending" &&
+    state.simulationTimeMs >= limitation.activeFromSimulationTimeMs
+  ) {
+    limitation.status = "active";
+  }
+
+  return events;
+}
+
+function allDeckEventsResolved(state: ApplicationState) {
+  const deck = state.eventDeck;
+  return (
+    deck.emergency.status === "resolved" &&
+    deck.rejectedTakeoff.status === "resolved" &&
+    deck.independentGoAround.status === "resolved"
+  );
+}
+
+function stableFlowNow(state: ApplicationState) {
+  return (
+    !state.stagedRecoveryPlan &&
+    !trafficDisrupted(state) &&
+    currentRunwayConflictCount(state) === 0
+  );
+}
+
+function advanceTraffic(state: ApplicationState, deltaMs: number) {
+  const events: TrafficEvent[] = [];
+
+  state.aircraft = state.aircraft.map((aircraft) => {
+    const progress = state.aircraftProgress[aircraft.id];
+    if (
+      !progress ||
+      aircraft.flightPhase === "out-of-play" ||
+      progress.stage === "done"
+    ) {
+      return aircraft;
+    }
+    const profile = capabilityProfileFor(state, aircraft);
+    const transition = () =>
+      events.push({
+        kind: "aircraft-state-transition",
+        callsign: aircraft.callsign,
+      });
+    let next: Aircraft = aircraft;
+
+    if (progress.stage === "waiting") {
+      if (state.simulationTimeMs < progress.entersPlayAtMs) {
+        return aircraft;
+      }
+      if (progress.role === "arrival") {
+        progress.stage = "inbound";
+        progress.waypoints = [
+          finalApproachFix(state.airport, progress.runwayId, progress.runwayEnd),
+        ];
+        progress.waypointIndex = 0;
+        transition();
+        return { ...aircraft, pilotState: "monitoring" };
+      }
+      progress.stage = "circuit";
+      progress.waypoints = circuitEntryWaypoints(
+        state.airport,
+        progress.runwayId,
+        progress.runwayEnd,
+      );
+      progress.waypointIndex = 0;
       return aircraft;
     }
 
-    if (state.simulationTimeMs >= lifecycle.completeAtMs) {
-      transitionedCallsigns.push(aircraft.callsign);
+    if (progress.stage === "circuit") {
+      const clearance = aircraft.activeRunwayClearance;
+      const restartLap = () => {
+        progress.waypoints = circuitLoopWaypoints(
+          state.airport,
+          progress.runwayId,
+          progress.runwayEnd,
+        );
+        progress.waypointIndex = 0;
+        delete progress.lapDecision;
+      };
+      if (clearance?.kind === "go-around") {
+        restartLap();
+        return { ...next, activeRunwayClearance: undefined };
+      }
+      const onFinalLeg =
+        progress.waypointIndex === progress.waypoints.length - 1;
+      if (onFinalLeg && !progress.lapDecision) {
+        const runwayFree = !runwayBlockedForLanding(
+          state,
+          progress.runwayId,
+          aircraft.id,
+        );
+        if (
+          clearance?.kind === "clear-touch-and-go" &&
+          clearance.runwayId === progress.runwayId &&
+          runwayFree
+        ) {
+          progress.lapDecision = "touch-and-go";
+        } else if (
+          clearance?.kind === "clear-to-land" &&
+          clearance.runwayId === progress.runwayId &&
+          runwayFree
+        ) {
+          progress.lapDecision = "full-stop";
+        } else {
+          restartLap();
+          return next;
+        }
+      }
+      const moved = moveTowardsWaypoints(
+        aircraft,
+        progress,
+        (aircraft.speedKnots / 3_600_000) * deltaMs,
+      );
+      const circuitAltitudeFeet = circuitDefinitionFor(
+        state.airport,
+        progress.runwayId,
+        progress.runwayEnd,
+      ).altitudeFeetAgl;
+      const threshold =
+        progress.waypoints[progress.waypoints.length - 1] ??
+        runwayThreshold(state.airport, progress.runwayId, progress.runwayEnd);
+      const altitudeFeet =
+        onFinalLeg && progress.lapDecision !== "extend"
+          ? Math.max(
+              0,
+              Math.min(
+                circuitAltitudeFeet,
+                Math.round(distanceBetween(moved.position, threshold) * 800),
+              ),
+            )
+          : circuitAltitudeFeet;
+      if (moved.arrived && progress.lapDecision === "touch-and-go") {
+        state.runwayOccupancies.push({
+          runwayId: progress.runwayId,
+          aircraftId: aircraft.id,
+          callsign: aircraft.callsign,
+          operation: "arrival",
+          wakeCategory: profile.wakeCategory,
+          beganAtSimulationTimeMs: state.simulationTimeMs,
+          clearsAtSimulationTimeMs:
+            state.simulationTimeMs + TOUCH_AND_GO_OCCUPANCY_MS,
+        });
+        restartLap();
+        return {
+          ...next,
+          position: moved.position,
+          altitudeFeet: 0,
+          activeRunwayClearance: undefined,
+        };
+      }
+      if (moved.arrived && progress.lapDecision === "full-stop") {
+        state.runwayOccupancies.push({
+          runwayId: progress.runwayId,
+          aircraftId: aircraft.id,
+          callsign: aircraft.callsign,
+          operation: "arrival",
+          wakeCategory: profile.wakeCategory,
+          beganAtSimulationTimeMs: state.simulationTimeMs,
+          clearsAtSimulationTimeMs:
+            state.simulationTimeMs + ARRIVAL_OCCUPANCY_MS,
+        });
+        progress.stage = "rollout";
+        progress.stageStartedAtMs = state.simulationTimeMs;
+        return {
+          ...next,
+          position: moved.position,
+          altitudeFeet: 0,
+          speedKnots: 40,
+        };
+      }
+      if (moved.arrived) {
+        restartLap();
+        return { ...next, position: moved.position, altitudeFeet };
+      }
       return {
-        ...aircraft,
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: lifecycle.exit,
+        ...next,
+        position: moved.position,
+        headingDegrees: moved.headingDegrees,
+        trackDegrees: moved.headingDegrees,
+        altitudeFeet,
       };
     }
 
-    if (
-      state.simulationTimeMs >= lifecycle.operatingAtMs &&
-      aircraft.pilotState !== "operating"
-    ) {
-      transitionedCallsigns.push(aircraft.callsign);
+    if (progress.stage === "hold-short" || progress.stage === "lined-up") {
+      const clearance = aircraft.activeRunwayClearance;
+      if (
+        !clearance ||
+        clearance.runwayId !== progress.runwayId ||
+        aircraft.pilotState !== "operating"
+      ) {
+        return aircraft;
+      }
+      if (clearance.kind === "clear-for-takeoff") {
+        const existingOccupancy = state.runwayOccupancies.find(
+          (occupancy) =>
+            occupancy.aircraftId === aircraft.id &&
+            occupancy.clearsAtSimulationTimeMs > state.simulationTimeMs,
+        );
+        if (existingOccupancy) {
+          existingOccupancy.clearsAtSimulationTimeMs =
+            state.simulationTimeMs + DEPARTURE_OCCUPANCY_MS;
+        } else {
+          state.runwayOccupancies.push({
+            runwayId: progress.runwayId,
+            aircraftId: aircraft.id,
+            callsign: aircraft.callsign,
+            operation: "departure",
+            wakeCategory: profile.wakeCategory,
+            beganAtSimulationTimeMs: state.simulationTimeMs,
+            clearsAtSimulationTimeMs:
+              state.simulationTimeMs + DEPARTURE_OCCUPANCY_MS,
+          });
+        }
+        progress.stage = "takeoff-roll";
+        progress.stageStartedAtMs = state.simulationTimeMs;
+        transition();
+        return { ...next, flightPhase: "departure" };
+      }
+      if (
+        clearance.kind === "line-up-and-wait" &&
+        progress.stage === "hold-short"
+      ) {
+        state.runwayOccupancies.push({
+          runwayId: progress.runwayId,
+          aircraftId: aircraft.id,
+          callsign: aircraft.callsign,
+          operation: "departure",
+          wakeCategory: profile.wakeCategory,
+          beganAtSimulationTimeMs: state.simulationTimeMs,
+          clearsAtSimulationTimeMs:
+            state.simulationTimeMs + LINE_UP_OCCUPANCY_MS,
+        });
+        progress.stage = "lined-up";
+        progress.stageStartedAtMs = state.simulationTimeMs;
+        return next;
+      }
+      if (
+        clearance.kind === "cancel-runway-clearance" &&
+        progress.stage === "lined-up"
+      ) {
+        for (const occupancy of state.runwayOccupancies) {
+          if (
+            occupancy.aircraftId === aircraft.id &&
+            occupancy.clearsAtSimulationTimeMs > state.simulationTimeMs
+          ) {
+            occupancy.clearsAtSimulationTimeMs = state.simulationTimeMs;
+          }
+        }
+        progress.stage = "hold-short";
+        return { ...next, activeRunwayClearance: undefined };
+      }
+      return aircraft;
+    }
+
+    if (progress.stage === "takeoff-roll") {
+      const elapsedMs = state.simulationTimeMs - progress.stageStartedAtMs;
+      const liftoffSpeedKnots = Math.round(profile.approachSpeedKnots * 1.1);
+      const rollFraction = Math.min(1, elapsedMs / TAKEOFF_ROLL_DURATION_MS);
+      const speedKnots = Math.round(liftoffSpeedKnots * rollFraction);
+      const direction = headingUnitVector(
+        runwayEndHeadingDegrees(progress.runwayEnd),
+      );
+      const position = addScaled(
+        aircraft.position,
+        direction,
+        (speedKnots / 3_600_000) * deltaMs,
+      );
+      if (elapsedMs >= TAKEOFF_ROLL_DURATION_MS) {
+        progress.stage = "climb-out";
+        progress.stageStartedAtMs = state.simulationTimeMs;
+      }
       return {
-        ...aircraft,
-        flightPhase: lifecycle.operatingFlightPhase,
-        pilotState: "operating",
+        ...next,
+        position,
+        speedKnots,
+        headingDegrees: runwayEndHeadingDegrees(progress.runwayEnd),
+        trackDegrees: runwayEndHeadingDegrees(progress.runwayEnd),
       };
+    }
+
+    if (progress.stage === "rejected") {
+      if (
+        state.simulationTimeMs - progress.stageStartedAtMs >=
+        REJECTED_TAKEOFF_OCCUPANCY_MS
+      ) {
+        progress.stage = "hold-short";
+        transition();
+        return {
+          ...next,
+          speedKnots: 0,
+          flightPhase: "hold-short",
+          pilotState: "ready",
+          activeRunwayClearance: undefined,
+        };
+      }
+      return {
+        ...next,
+        speedKnots: Math.max(
+          0,
+          aircraft.speedKnots - Math.round(deltaMs / 100) * 2,
+        ),
+      };
+    }
+
+    if (progress.stage === "climb-out") {
+      const direction = headingUnitVector(
+        runwayEndHeadingDegrees(progress.runwayEnd),
+      );
+      const speedKnots = profile.cruiseSpeedKnots;
+      const position = addScaled(
+        aircraft.position,
+        direction,
+        (speedKnots / 3_600_000) * deltaMs,
+      );
+      const altitudeFeet = Math.round(
+        aircraft.altitudeFeet +
+          (profile.climbRateFeetPerMinute / 60_000) * deltaMs,
+      );
+      const boundary = state.airport.localControlBoundary;
+      if (
+        distanceBetween(position, boundary.center) >
+        boundary.radiusNauticalMiles
+      ) {
+        progress.stage = "done";
+        transition();
+        return {
+          ...next,
+          position,
+          speedKnots,
+          altitudeFeet,
+          flightPhase: "out-of-play",
+          pilotState: "complete",
+          exit: "departed",
+        };
+      }
+      return { ...next, position, speedKnots, altitudeFeet };
+    }
+
+    if (progress.stage === "inbound" || progress.stage === "go-around") {
+      const clearance = aircraft.activeRunwayClearance;
+      if (clearance?.kind === "go-around" && progress.stage === "inbound") {
+        beginGoAround(state, aircraft, progress);
+        return { ...next, activeRunwayClearance: undefined };
+      }
+      const speedKnots =
+        progress.stage === "go-around"
+          ? Math.max(
+              profile.approachSpeedKnots,
+              Math.min(profile.cruiseSpeedKnots, 160),
+            )
+          : aircraft.speedKnots;
+      const moved = moveTowardsWaypoints(
+        aircraft,
+        progress,
+        (speedKnots / 3_600_000) * deltaMs,
+      );
+      const altitudeFeet =
+        progress.stage === "go-around"
+          ? Math.min(
+              1_000,
+              Math.round(
+                aircraft.altitudeFeet +
+                  (profile.climbRateFeetPerMinute / 60_000) * deltaMs,
+              ),
+            )
+          : aircraft.altitudeFeet;
+      if (moved.arrived) {
+        progress.stage = "approach";
+        progress.waypoints = [
+          runwayThreshold(state.airport, progress.runwayId, progress.runwayEnd),
+        ];
+        progress.waypointIndex = 0;
+        delete progress.committedToLand;
+        transition();
+        return {
+          ...next,
+          position: moved.position,
+          headingDegrees: moved.headingDegrees,
+          trackDegrees: moved.headingDegrees,
+          speedKnots: profile.approachSpeedKnots,
+          altitudeFeet: Math.min(altitudeFeet, 1_500),
+          flightPhase: "approach",
+          pilotState:
+            aircraft.pilotState === "monitoring"
+              ? "operating"
+              : aircraft.pilotState,
+        };
+      }
+      return {
+        ...next,
+        position: moved.position,
+        headingDegrees: moved.headingDegrees,
+        trackDegrees: moved.headingDegrees,
+        speedKnots,
+        altitudeFeet,
+      };
+    }
+
+    if (progress.stage === "approach") {
+      const clearance = aircraft.activeRunwayClearance;
+      if (clearance?.kind === "go-around") {
+        beginGoAround(state, aircraft, progress);
+        return { ...next, activeRunwayClearance: undefined };
+      }
+      if (clearance?.kind === "cancel-runway-clearance") {
+        return { ...next, activeRunwayClearance: undefined };
+      }
+      const threshold = runwayThreshold(
+        state.airport,
+        progress.runwayId,
+        progress.runwayEnd,
+      );
+      const distanceToThresholdNm = distanceBetween(
+        aircraft.position,
+        threshold,
+      );
+      if (
+        distanceToThresholdNm <= LANDING_DECISION_GATE_NM &&
+        !progress.committedToLand
+      ) {
+        const clearedToLand =
+          clearance?.kind === "clear-to-land" &&
+          clearance.runwayId === progress.runwayId;
+        const independentGoAround = state.eventDeck.independentGoAround;
+        const forcedUnstableApproach =
+          independentGoAround.status === "pending" &&
+          independentGoAround.aircraftId === aircraft.id;
+        if (
+          forcedUnstableApproach ||
+          progress.forcedGoAroundOnNextGate ||
+          !clearedToLand ||
+          runwayBlockedForLanding(state, progress.runwayId, aircraft.id)
+        ) {
+          const reason = forcedUnstableApproach
+            ? "unstable approach"
+            : !clearedToLand
+              ? "no landing clearance"
+              : "runway occupied";
+          if (forcedUnstableApproach) {
+            independentGoAround.status = "executed";
+          }
+          beginGoAround(state, aircraft, progress);
+          appendTransmission(
+            state,
+            "pilot",
+            aircraft.id,
+            `${aircraft.callsign}, going around, ${reason}.`,
+          );
+          events.push({
+            kind: "pilot-go-around-executed",
+            aircraftId: aircraft.id,
+            callsign: aircraft.callsign,
+            summary: `${aircraft.callsign} executed a Pilot-owned go-around (${reason}) on runway ${progress.runwayEnd}.`,
+          });
+          return { ...next, activeRunwayClearance: undefined };
+        }
+        progress.committedToLand = true;
+      }
+      const moved = moveTowardsWaypoints(
+        aircraft,
+        progress,
+        (aircraft.speedKnots / 3_600_000) * deltaMs,
+      );
+      const altitudeFeet = Math.max(
+        0,
+        Math.round(
+          (distanceBetween(moved.position, threshold) /
+            FINAL_APPROACH_FIX_DISTANCE_NM) *
+            1_500,
+        ),
+      );
+      if (moved.arrived) {
+        state.runwayOccupancies.push({
+          runwayId: progress.runwayId,
+          aircraftId: aircraft.id,
+          callsign: aircraft.callsign,
+          operation: "arrival",
+          wakeCategory: profile.wakeCategory,
+          beganAtSimulationTimeMs: state.simulationTimeMs,
+          clearsAtSimulationTimeMs:
+            state.simulationTimeMs + ARRIVAL_OCCUPANCY_MS,
+        });
+        progress.stage = "rollout";
+        progress.stageStartedAtMs = state.simulationTimeMs;
+        return {
+          ...next,
+          position: moved.position,
+          altitudeFeet: 0,
+          speedKnots: 40,
+        };
+      }
+      return {
+        ...next,
+        position: moved.position,
+        headingDegrees: moved.headingDegrees,
+        trackDegrees: moved.headingDegrees,
+        altitudeFeet,
+      };
+    }
+
+    if (progress.stage === "rollout") {
+      if (
+        state.simulationTimeMs - progress.stageStartedAtMs >=
+        ARRIVAL_OCCUPANCY_MS
+      ) {
+        progress.stage = "done";
+        transition();
+        return {
+          ...next,
+          speedKnots: 0,
+          flightPhase: "out-of-play",
+          pilotState: "complete",
+          exit: "landed",
+        };
+      }
+      return aircraft;
     }
 
     return aircraft;
   });
-  return transitionedCallsigns;
+
+  return events;
 }
 
 function activeCapabilities(
@@ -1866,18 +2990,61 @@ export function createFlowControlApplication(options: {
         }
 
         for (let step = 0; step < steps; step += 1) {
-          state.simulationTimeMs +=
+          if (state.shiftStatus !== "active") {
+            break;
+          }
+          const deltaMs =
             simulation.fixedTimeStepMs * simulation.paceMultiplier;
-          for (const callsign of advanceAircraftState(state)) {
+          state.simulationTimeMs += deltaMs;
+          for (const deckEvent of runEventDeck(state)) {
+            const stateVersionBefore = state.stateVersion;
+            state.stateVersion += 1;
+            state.operationalReceipts.push({
+              actor: "simulation-clock",
+              action: deckEvent.action,
+              simulationTimeMs: state.simulationTimeMs,
+              stateVersionBefore,
+              stateVersionAfter: state.stateVersion,
+              summary: deckEvent.summary,
+            });
+            for (const action of invalidateStagedPlans(state)) {
+              const invalidationVersionBefore = state.stateVersion;
+              state.stateVersion += 1;
+              state.operationalReceipts.push({
+                actor: "simulation-clock",
+                action,
+                simulationTimeMs: state.simulationTimeMs,
+                stateVersionBefore: invalidationVersionBefore,
+                stateVersionAfter: state.stateVersion,
+              });
+            }
+          }
+          for (const trafficEvent of advanceTraffic(state, deltaMs)) {
             const stateVersionBefore = state.stateVersion;
             state.stateVersion += 1;
             state.operationalReceipts.push({
               actor: command.actor,
-              action: "aircraft-state-transition",
+              action: trafficEvent.kind,
               simulationTimeMs: state.simulationTimeMs,
               stateVersionBefore,
               stateVersionAfter: state.stateVersion,
+              ...(trafficEvent.kind === "pilot-go-around-executed"
+                ? { summary: trafficEvent.summary }
+                : {}),
             });
+            if (trafficEvent.kind === "pilot-go-around-executed") {
+              for (const action of invalidateStagedPlans(state)) {
+                const invalidationVersionBefore = state.stateVersion;
+                state.stateVersion += 1;
+                state.operationalReceipts.push({
+                  actor: "simulation-clock",
+                  action,
+                  simulationTimeMs: state.simulationTimeMs,
+                  stateVersionBefore: invalidationVersionBefore,
+                  stateVersionAfter: state.stateVersion,
+                });
+              }
+            }
           }
           if (advanceRunwayResources(state)) {
             const stateVersionBefore = state.stateVersion;
@@ -1895,10 +3062,18 @@ export function createFlowControlApplication(options: {
             state.stateVersion += 1;
             state.operationalReceipts.push({
               actor: "simulation-clock",
-              action: "pilot-readback-received",
+              action:
+                readback.kind === "unable"
+                  ? "pilot-unable-reported"
+                  : "pilot-readback-received",
               simulationTimeMs: state.simulationTimeMs,
               stateVersionBefore,
               stateVersionAfter: state.stateVersion,
+              ...(readback.kind === "unable"
+                ? {
+                    summary: `Pilot reported unable; replan this aircraft: ${readback.text}`,
+                  }
+                : {}),
             });
           }
           for (const action of expireStagedPlans(state)) {
@@ -1911,6 +3086,35 @@ export function createFlowControlApplication(options: {
               stateVersionBefore,
               stateVersionAfter: state.stateVersion,
             });
+          }
+          if (allDeckEventsResolved(state) && stableFlowNow(state)) {
+            state.stableSinceSimulationTimeMs ??= state.simulationTimeMs;
+            if (
+              state.simulationTimeMs - state.stableSinceSimulationTimeMs >=
+              STABLE_FLOW_HOLD_MS
+            ) {
+              for (const action of [
+                "stable-flow-restored",
+                "shift-completed",
+              ] as const) {
+                const stateVersionBefore = state.stateVersion;
+                state.stateVersion += 1;
+                state.operationalReceipts.push({
+                  actor: "simulation-clock",
+                  action,
+                  simulationTimeMs: state.simulationTimeMs,
+                  stateVersionBefore,
+                  stateVersionAfter: state.stateVersion,
+                  summary:
+                    action === "stable-flow-restored"
+                      ? "Stable Flow restored after all required events were resolved."
+                      : "The Shift is complete; review the Shift Scorecard and audit export.",
+                });
+              }
+              state.shiftStatus = "completed";
+            }
+          } else {
+            delete state.stableSinceSimulationTimeMs;
           }
         }
         const snapshot = towerSnapshot();
@@ -2115,17 +3319,38 @@ export function createFlowControlApplication(options: {
           };
         }
 
-        state.aircraft = state.aircraft.map((candidate) =>
-          candidate.id === aircraft.id
-            ? {
-                ...candidate,
-                activeTacticalInstruction: structuredClone(command.instruction),
-                pilotState: "awaiting-readback",
-              }
-            : candidate,
-        );
-        appendTransmission(state, "controller", aircraft.id, text);
-        queuePilotReadback(state, aircraft.id, text);
+        const limitation = state.eventDeck.temporaryLimitation;
+        const limitationBlocksInstruction =
+          (limitation.status === "active" || limitation.status === "reported") &&
+          limitation.aircraftId === aircraft.id;
+        if (limitationBlocksInstruction) {
+          state.aircraft = state.aircraft.map((candidate) =>
+            candidate.id === aircraft.id
+              ? { ...candidate, pilotState: "awaiting-readback" }
+              : candidate,
+          );
+          appendTransmission(state, "controller", aircraft.id, text);
+          queuePilotReadback(
+            state,
+            aircraft.id,
+            `${aircraft.callsign}, unable, ${limitation.reason}.`,
+            "unable",
+          );
+        } else {
+          state.aircraft = state.aircraft.map((candidate) =>
+            candidate.id === aircraft.id
+              ? {
+                  ...candidate,
+                  activeTacticalInstruction: structuredClone(
+                    command.instruction,
+                  ),
+                  pilotState: "awaiting-readback",
+                }
+              : candidate,
+          );
+          appendTransmission(state, "controller", aircraft.id, text);
+          queuePilotReadback(state, aircraft.id, text);
+        }
         const stateVersionBefore = state.stateVersion;
         state.stateVersion += 1;
         state.operationalReceipts.push({

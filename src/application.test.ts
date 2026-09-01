@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createFlowControlApplication,
+  FIRST_LAUNCH_SCENARIO_SEED,
+  generateScenario,
   type TowerSnapshot,
 } from "./application";
 
@@ -165,6 +167,63 @@ const EXPECTED_AIRCRAFT_CAPABILITY_PROFILES = [
     },
   },
 ] as const;
+
+type FlowControlApplication = ReturnType<typeof createFlowControlApplication>;
+
+function advanceSteps(application: FlowControlApplication, steps: number) {
+  application.command({
+    type: "advance-simulation",
+    actor: "simulation-clock",
+    steps,
+  });
+}
+
+function advanceUntil(
+  application: FlowControlApplication,
+  predicate: (snapshot: TowerSnapshot) => boolean,
+  maxSteps = 5_000,
+) {
+  for (let advanced = 0; advanced < maxSteps; advanced += 10) {
+    const snapshot = application.query({
+      type: "tower-snapshot",
+    }) as TowerSnapshot;
+    if (predicate(snapshot)) {
+      return snapshot;
+    }
+    advanceSteps(application, 10);
+  }
+  const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+  if (!predicate(snapshot)) {
+    throw new Error("advanceUntil never satisfied its predicate.");
+  }
+  return snapshot;
+}
+
+function issueManualRunwayClearance(
+  application: FlowControlApplication,
+  aircraftId: string,
+  clearance: {
+    kind:
+      | "hold-short"
+      | "line-up-and-wait"
+      | "cancel-runway-clearance"
+      | "clear-for-takeoff"
+      | "clear-to-land"
+      | "clear-touch-and-go"
+      | "go-around";
+    runwayId: "09-27" | "04-22";
+    runwayEnd: "09" | "27" | "04" | "22";
+  },
+) {
+  const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+  return application.command({
+    type: "issue-runway-clearance",
+    actor: "supervising-controller",
+    aircraftId,
+    clearance,
+    expectedStateVersion: snapshot.stateVersion,
+  });
+}
 
 describe("Shift lifecycle", () => {
   afterEach(() => {
@@ -359,14 +418,14 @@ describe("Shift lifecycle", () => {
       type: "tower-snapshot",
     }) as TowerSnapshot;
     expect(
-      initialSnapshot.aircraft.map(
-        ({ callsign, capabilityProfileId, flightPhase, pilotState }) => ({
+      initialSnapshot.aircraft
+        .filter(({ id }) => id !== "fc-108" && id !== "fc-207")
+        .map(({ callsign, capabilityProfileId, flightPhase, pilotState }) => ({
           callsign,
           capabilityProfileId,
           flightPhase,
           pilotState,
-        }),
-      ),
+        })),
     ).toEqual([
       {
         callsign: "FLOW 101",
@@ -406,85 +465,925 @@ describe("Shift lifecycle", () => {
       },
     ]);
 
-    application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 100,
-    });
+    advanceSteps(application, 600);
     expect(
       (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft[0],
     ).toMatchObject({
+      callsign: "FLOW 101",
+      flightPhase: "hold-short",
+      pilotState: "ready",
+    });
+
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "09",
+    });
+    const departingSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.aircraft[0].flightPhase === "departure",
+      500,
+    );
+    expect(departingSnapshot.aircraft[0]).toMatchObject({
       callsign: "FLOW 101",
       flightPhase: "departure",
       pilotState: "operating",
     });
 
-    application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 2_000,
+    const departedSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.aircraft[0].flightPhase === "out-of-play",
+      4_000,
+    );
+    expect(departedSnapshot.aircraft[0]).toMatchObject({
+      callsign: "FLOW 101",
+      flightPhase: "out-of-play",
+      pilotState: "complete",
+      exit: "departed",
     });
-    const completedSnapshot = application.query({
-      type: "tower-snapshot",
-    }) as TowerSnapshot;
-    expect(completedSnapshot.simulationTimeMs).toBe(210_000);
-    expect(
-      completedSnapshot.aircraft.map(
-        ({ callsign, flightPhase, pilotState, exit }) => ({
-          callsign,
-          flightPhase,
-          pilotState,
-          exit,
-        }),
-      ),
-    ).toEqual([
-      {
-        callsign: "FLOW 101",
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: "departed",
-      },
-      {
-        callsign: "FLOW 202",
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: "landed",
-      },
-      {
-        callsign: "FLOW 303",
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: "landed",
-      },
-      {
-        callsign: "FLOW 404",
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: "departed",
-      },
-      {
-        callsign: "FLOW 505",
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: "landed",
-      },
-      {
-        callsign: "FLOW 106",
-        flightPhase: "out-of-play",
-        pilotState: "complete",
-        exit: "landed",
-      },
-    ]);
     expect(
       (
         application.query({ type: "operational-receipts" }) as Array<{
           action: string;
         }>
-      )
-        .filter(
-          (receipt) => receipt.action === "aircraft-state-transition",
+      ).filter((receipt) => receipt.action === "aircraft-state-transition")
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("lands a cleared arrival causally and leaves an uncleared arrival flying a Pilot-owned go-around", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-5-causal-arrivals",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    issueManualRunwayClearance(application, "fc-202", {
+      kind: "clear-to-land",
+      runwayId: "04-22",
+      runwayEnd: "04",
+    });
+
+    const landedSnapshot = advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === "fc-202")?.flightPhase ===
+        "out-of-play",
+      4_000,
+    );
+    expect(landedSnapshot.aircraft.find(({ id }) => id === "fc-202")).toMatchObject(
+      {
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "landed",
+      },
+    );
+
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+          }>
+        ).some((receipt) => receipt.action === "pilot-go-around-executed"),
+      6_000,
+    );
+    const uncleardArrival = (
+      application.query({ type: "tower-snapshot" }) as TowerSnapshot
+    ).aircraft.find(({ id }) => id === "fc-303");
+    expect(uncleardArrival).toMatchObject({ flightPhase: "approach" });
+    expect(
+      (
+        application.query({ type: "transmissions" }) as Array<{
+          speaker: string;
+          text: string;
+        }>
+      ).some(
+        ({ speaker, text }) =>
+          speaker === "pilot" && text.startsWith("FLOW 303, going around"),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps an uncleared circuit aircraft flying its authored legs without touching the runway", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-5-circuit-extend",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const initialPosition = (
+      application.query({ type: "tower-snapshot" }) as TowerSnapshot
+    ).aircraft.find(({ id }) => id === "fc-106")?.position;
+    advanceSteps(application, 4_500);
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    const circuitAircraft = snapshot.aircraft.find(({ id }) => id === "fc-106");
+    expect(circuitAircraft).toMatchObject({ flightPhase: "circuit" });
+    expect(circuitAircraft?.position).not.toEqual(initialPosition);
+    expect(
+      snapshot.runwayResources.runwayOccupancy.filter(
+        ({ aircraftId }) => aircraftId === "fc-106",
+      ),
+    ).toEqual([]);
+  });
+
+  it("touches and goes only under a Clearance and lands the circuit full-stop when cleared to land", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-5-circuit-clearances",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    issueManualRunwayClearance(application, "fc-106", {
+      kind: "clear-touch-and-go",
+      runwayId: "09-27",
+      runwayEnd: "09",
+    });
+    const touchSnapshot = advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.runwayResources.runwayOccupancy.some(
+          ({ aircraftId }) => aircraftId === "fc-106",
         ),
-    ).toHaveLength(12);
+      4_000,
+    );
+    expect(
+      touchSnapshot.runwayResources.runwayOccupancy.find(
+        ({ aircraftId }) => aircraftId === "fc-106",
+      ),
+    ).toMatchObject({ runwayId: "09-27", operation: "arrival" });
+    expect(
+      touchSnapshot.aircraft.find(({ id }) => id === "fc-106"),
+    ).toMatchObject({ flightPhase: "circuit" });
+
+    advanceUntil(
+      application,
+      (snapshot) => snapshot.runwayResources.runwayOccupancy.length === 0,
+      200,
+    );
+    issueManualRunwayClearance(application, "fc-106", {
+      kind: "clear-to-land",
+      runwayId: "09-27",
+      runwayEnd: "09",
+    });
+    const landedSnapshot = advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === "fc-106")?.flightPhase ===
+        "out-of-play",
+      5_000,
+    );
+    expect(landedSnapshot.aircraft.find(({ id }) => id === "fc-106")).toMatchObject(
+      {
+        flightPhase: "out-of-play",
+        pilotState: "complete",
+        exit: "landed",
+      },
+    );
+  });
+
+  it("casts all three event classes for every Scenario Seed", () => {
+    const seeds = [
+      "flow-first-shift",
+      ...Array.from({ length: 20 }, (_, index) => `phase-5-seed-${index}`),
+    ];
+    for (const seed of seeds) {
+      const scenario = generateScenario(seed);
+      const replayedScenario = generateScenario(seed);
+      expect(replayedScenario.eventDeck).toEqual(scenario.eventDeck);
+
+      const rosterIds = scenario.aircraft.map(({ id }) => id);
+      const intentionOf = (aircraftId: string) =>
+        scenario.aircraft.find(({ id }) => id === aircraftId)?.intention;
+      expect(scenario.aircraft.length).toBeGreaterThanOrEqual(6);
+      expect(
+        scenario.aircraft.filter(({ intention }) => intention === "circuit")
+          .length,
+      ).toBeGreaterThanOrEqual(1);
+
+      const deck = scenario.eventDeck;
+      expect(rosterIds).toContain(deck.emergency.aircraftId);
+      expect(intentionOf(deck.emergency.aircraftId)).toBe("arrival");
+      expect(rosterIds).toContain(deck.rejectedTakeoff.aircraftId);
+      expect(intentionOf(deck.rejectedTakeoff.aircraftId)).toBe("departure");
+      expect(rosterIds).toContain(deck.independentGoAround.aircraftId);
+      expect(intentionOf(deck.independentGoAround.aircraftId)).toBe("arrival");
+      expect(deck.independentGoAround.aircraftId).not.toBe(
+        deck.emergency.aircraftId,
+      );
+      expect(intentionOf(deck.temporaryLimitation.aircraftId)).toBe("circuit");
+      expect(deck.emergency.status).toBe("pending");
+      expect(deck.rejectedTakeoff.status).toBe("pending");
+      expect(deck.independentGoAround.status).toBe("pending");
+      expect(deck.temporaryLimitation.status).toBe("pending");
+    }
+  });
+
+  it("executes the seeded independent go-around despite a landing Clearance and lands after replanning", () => {
+    const scenarioSeed = "phase-5-independent-goaround";
+    const scenario = generateScenario(scenarioSeed);
+    const aircraftId = scenario.eventDeck.independentGoAround.aircraftId;
+    const progress = scenario.aircraftProgress[aircraftId];
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    issueManualRunwayClearance(application, aircraftId, {
+      kind: "clear-to-land",
+      runwayId: progress.runwayId,
+      runwayEnd: progress.runwayEnd,
+    });
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+            summary?: string;
+          }>
+        ).some(
+          (receipt) =>
+            receipt.action === "pilot-go-around-executed" &&
+            receipt.summary?.includes("unstable approach"),
+        ),
+      10_000,
+    );
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft.find(
+        ({ id }) => id === aircraftId,
+      )?.flightPhase,
+    ).toBe("approach");
+
+    issueManualRunwayClearance(application, aircraftId, {
+      kind: "clear-to-land",
+      runwayId: progress.runwayId,
+      runwayEnd: progress.runwayEnd,
+    });
+    const landedSnapshot = advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === aircraftId)?.flightPhase ===
+        "out-of-play",
+      10_000,
+    );
+    expect(
+      landedSnapshot.aircraft.find(({ id }) => id === aircraftId),
+    ).toMatchObject({ exit: "landed" });
+  });
+
+  it("declares the seeded emergency and upgrades classification for protection and recovery", () => {
+    const scenarioSeed = "phase-5-emergency";
+    const scenario = generateScenario(scenarioSeed);
+    const emergencyId = scenario.eventDeck.emergency.aircraftId;
+    const emergencyProgress = scenario.aircraftProgress[emergencyId];
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+          }>
+        ).some((receipt) => receipt.action === "emergency-declared"),
+      2_000,
+    );
+    expect(
+      (
+        application.query({ type: "transmissions" }) as Array<{
+          speaker: string;
+          text: string;
+        }>
+      ).some(
+        ({ speaker, text }) =>
+          speaker === "pilot" && text.startsWith("MAYDAY"),
+      ),
+    ).toBe(true);
+
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    expect(
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: snapshot.stateVersion,
+        runwayClearances: [
+          {
+            aircraftId: emergencyId,
+            clearance: {
+              kind: "clear-to-land",
+              runwayId: emergencyProgress.runwayId,
+              runwayEnd: emergencyProgress.runwayEnd,
+            },
+          },
+        ],
+      }),
+    ).toMatchObject({ classification: "elevated" });
+    expect(
+      application.query({
+        type: "evaluate-clearance-set",
+        expectedStateVersion: snapshot.stateVersion,
+        runwayClearances: [
+          {
+            aircraftId: emergencyId,
+            clearance: {
+              kind: "clear-to-land",
+              runwayId: emergencyProgress.runwayId,
+              runwayEnd: emergencyProgress.runwayEnd,
+            },
+          },
+          {
+            aircraftId: "fc-101",
+            clearance: {
+              kind: "hold-short",
+              runwayId: "09-27",
+              runwayEnd: "09",
+            },
+          },
+        ],
+      }),
+    ).toMatchObject({ classification: "exceptional-recovery" });
+  });
+
+  it("forces an arrival around when an occupied intersecting runway blocks its landing", () => {
+    const scenarioSeed = "phase-5-blocked-landing";
+    const scenario = generateScenario(scenarioSeed);
+    const targetId = ["fc-202", "fc-303", "fc-505"].find(
+      (id) =>
+        id !== scenario.eventDeck.independentGoAround.aircraftId &&
+        id !== scenario.eventDeck.emergency.aircraftId,
+    ) as string;
+    const targetProgress = scenario.aircraftProgress[targetId];
+    const thresholds: Record<string, { east: number; north: number }> = {
+      "09": { east: -0.947, north: 0 },
+      "27": { east: 0.947, north: 0 },
+      "04": { east: -0.291, north: -0.347 },
+      "22": { east: 0.291, north: 0.347 },
+    };
+    const threshold = thresholds[targetProgress.runwayEnd];
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    issueManualRunwayClearance(application, targetId, {
+      kind: "clear-to-land",
+      runwayId: targetProgress.runwayId,
+      runwayEnd: targetProgress.runwayEnd,
+    });
+    advanceUntil(
+      application,
+      (snapshot) => {
+        const target = snapshot.aircraft.find(({ id }) => id === targetId);
+        return (
+          !!target &&
+          Math.hypot(
+            target.position.eastNauticalMiles - threshold.east,
+            target.position.northNauticalMiles - threshold.north,
+          ) < 1.7
+        );
+      },
+      10_000,
+    );
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "09",
+    });
+
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+            summary?: string;
+          }>
+        ).some(
+          (receipt) =>
+            receipt.action === "pilot-go-around-executed" &&
+            receipt.summary?.includes("runway occupied"),
+        ),
+      500,
+    );
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft.find(
+        ({ id }) => id === targetId,
+      )?.flightPhase,
+    ).toBe("approach");
+  });
+
+  it("does not arm the rejected takeoff before the emergency resolves", () => {
+    const scenarioSeed = "phase-5-no-early-rejection";
+    const scenario = generateScenario(scenarioSeed);
+    const castId = scenario.eventDeck.rejectedTakeoff.aircraftId;
+    const castProgress = scenario.aircraftProgress[castId];
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    issueManualRunwayClearance(application, castId, {
+      kind: "clear-for-takeoff",
+      runwayId: castProgress.runwayId,
+      runwayEnd: castProgress.runwayEnd === "09" ? "09" : castProgress.runwayEnd,
+    });
+    advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === castId)?.flightPhase ===
+        "out-of-play",
+      4_000,
+    );
+    expect(
+      (
+        application.query({ type: "operational-receipts" }) as Array<{
+          action: string;
+        }>
+      ).some((receipt) => receipt.action === "takeoff-rejected"),
+    ).toBe(false);
+  });
+
+  it("rejects the armed takeoff after approved recovery, holds the runway, and departs after replanning", () => {
+    const scenarioSeed = "phase-5-rejected-takeoff";
+    const scenario = generateScenario(scenarioSeed);
+    const emergencyId = scenario.eventDeck.emergency.aircraftId;
+    const emergencyProgress = scenario.aircraftProgress[emergencyId];
+    const castId = scenario.eventDeck.rejectedTakeoff.aircraftId;
+    const castProgress = scenario.aircraftProgress[castId];
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+          }>
+        ).some((receipt) => receipt.action === "emergency-declared"),
+      2_000,
+    );
+
+    let snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    expect(
+      application.command({
+        type: "stage-recovery-plan",
+        actor: "tower-agent",
+        planReference: "emergency-recovery",
+        runwayClearances: [
+          {
+            aircraftId: emergencyId,
+            clearance: {
+              kind: "clear-to-land",
+              runwayId: emergencyProgress.runwayId,
+              runwayEnd: emergencyProgress.runwayEnd,
+            },
+          },
+          {
+            aircraftId: castId,
+            clearance: {
+              kind: "hold-short",
+              runwayId: castProgress.runwayId,
+              runwayEnd: castProgress.runwayEnd,
+            },
+          },
+        ],
+        expectedStateVersion: snapshot.stateVersion,
+      }),
+    ).toMatchObject({ status: "approval-required" });
+    snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    expect(
+      application.command({
+        type: "approve-recovery-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: snapshot.stateVersion,
+      }),
+    ).toMatchObject({ status: "success" });
+
+    advanceUntil(
+      application,
+      (currentSnapshot) =>
+        currentSnapshot.aircraft.find(({ id }) => id === emergencyId)
+          ?.flightPhase === "out-of-play",
+      10_000,
+    );
+
+    issueManualRunwayClearance(application, castId, {
+      kind: "clear-for-takeoff",
+      runwayId: castProgress.runwayId,
+      runwayEnd: castProgress.runwayEnd,
+    });
+    const rejectionSnapshot = advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+          }>
+        ).some((receipt) => receipt.action === "takeoff-rejected"),
+      1_000,
+    );
+    const occupancy = rejectionSnapshot.runwayResources.runwayOccupancy.find(
+      ({ aircraftId }) => aircraftId === castId,
+    );
+    expect(occupancy).toBeDefined();
+    expect(
+      (occupancy?.clearsAtSimulationTimeMs ?? 0) -
+        rejectionSnapshot.simulationTimeMs,
+    ).toBeGreaterThan(60_000);
+
+    advanceUntil(
+      application,
+      (currentSnapshot) =>
+        currentSnapshot.aircraft.find(({ id }) => id === castId)?.flightPhase ===
+        "hold-short",
+      1_500,
+    );
+    issueManualRunwayClearance(application, castId, {
+      kind: "clear-for-takeoff",
+      runwayId: castProgress.runwayId,
+      runwayEnd: castProgress.runwayEnd,
+    });
+    const departedSnapshot = advanceUntil(
+      application,
+      (currentSnapshot) =>
+        currentSnapshot.aircraft.find(({ id }) => id === castId)?.flightPhase ===
+        "out-of-play",
+      6_000,
+    );
+    expect(
+      departedSnapshot.aircraft.find(({ id }) => id === castId),
+    ).toMatchObject({ exit: "departed" });
+  });
+
+  it("reports an authored unable limitation and treats it as a replanning event", () => {
+    const scenarioSeed = "phase-5-unable-limitation";
+    const scenario = generateScenario(scenarioSeed);
+    const limitedId = scenario.eventDeck.temporaryLimitation.aircraftId;
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+          }>
+        ).some((receipt) => receipt.action === "emergency-declared"),
+      2_000,
+    );
+
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    application.command({
+      type: "issue-tactical-instruction",
+      actor: "supervising-controller",
+      aircraftId: limitedId,
+      instruction: { speedKnots: 80 },
+      expectedStateVersion: snapshot.stateVersion,
+    });
+    advanceUntil(
+      application,
+      () =>
+        (
+          application.query({ type: "operational-receipts" }) as Array<{
+            action: string;
+          }>
+        ).some((receipt) => receipt.action === "pilot-unable-reported"),
+      100,
+    );
+    const limitedAircraft = (
+      application.query({ type: "tower-snapshot" }) as TowerSnapshot
+    ).aircraft.find(({ id }) => id === limitedId);
+    expect(limitedAircraft?.activeTacticalInstruction).toBeUndefined();
+    expect(
+      (
+        application.query({ type: "transmissions" }) as Array<{
+          speaker: string;
+          text: string;
+        }>
+      ).some(
+        ({ speaker, text }) => speaker === "pilot" && text.includes("unable"),
+      ),
+    ).toBe(true);
+  });
+
+  it("completes the polished first-launch Shift with every coordination beat at the application boundary", () => {
+    const scenario = generateScenario(FIRST_LAUNCH_SCENARIO_SEED);
+    const deck = scenario.eventDeck;
+    const progressOf = (aircraftId: string) =>
+      scenario.aircraftProgress[aircraftId];
+    const application = createFlowControlApplication({
+      scenarioSeed: FIRST_LAUNCH_SCENARIO_SEED,
+      operatingPosture: "take-the-sector",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const currentSnapshot = () =>
+      application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    const receiptsSoFar = () =>
+      application.query({ type: "operational-receipts" }) as Array<{
+        action: string;
+        summary?: string;
+        simulationTimeMs: number;
+      }>;
+    const hasReceipt = (action: string) =>
+      receiptsSoFar().some((receipt) => receipt.action === action);
+    const issueAsTowerAgent = (
+      aircraftId: string,
+      clearance: {
+        kind: "clear-for-takeoff" | "clear-to-land" | "hold-short";
+        runwayId: "09-27" | "04-22";
+        runwayEnd: "09" | "27" | "04" | "22";
+      },
+    ) =>
+      application.command({
+        type: "issue-runway-clearance",
+        actor: "tower-agent",
+        aircraftId,
+        clearance,
+        expectedStateVersion: currentSnapshot().stateVersion,
+      });
+
+    let modificationDone = false;
+    let unableIssued = false;
+
+    for (let iteration = 0; iteration < 900; iteration += 1) {
+      const snapshot = currentSnapshot();
+      if (snapshot.shiftStatus === "completed") {
+        break;
+      }
+
+      // Controller-modification beat: stage, edit, and dispatch one Clearance
+      // Plan atomically before the first disruption.
+      if (!modificationDone) {
+        const staging = application.command({
+          type: "stage-clearance-plan",
+          actor: "tower-agent",
+          planReference: "opening-flow",
+          runwayClearances: [
+            {
+              aircraftId: deck.rejectedTakeoff.aircraftId,
+              clearance: {
+                kind: "hold-short",
+                runwayId: progressOf(deck.rejectedTakeoff.aircraftId).runwayId,
+                runwayEnd: progressOf(deck.rejectedTakeoff.aircraftId)
+                  .runwayEnd,
+              },
+            },
+          ],
+          tacticalInstructions: [
+            {
+              aircraftId: deck.emergency.aircraftId,
+              instruction: { headingDegrees: 180 },
+            },
+          ],
+          expectedStateVersion: snapshot.stateVersion,
+        }) as { status: string };
+        if (staging.status === "success" || staging.status === "approval-required") {
+          const staged = currentSnapshot();
+          const memberId = staged.stagedClearancePlan?.tacticalMembers[0]?.id;
+          if (memberId) {
+            application.command({
+              type: "edit-clearance-plan-tactical-instruction",
+              actor: "supervising-controller",
+              memberId,
+              changes: { headingDegrees: 200 },
+              expectedStateVersion: staged.stateVersion,
+            });
+            application.command({
+              type: "dispatch-selected-clearance-plan",
+              actor: "supervising-controller",
+              expectedStateVersion: currentSnapshot().stateVersion,
+            });
+            modificationDone = true;
+          }
+        }
+      }
+
+      const emergencyDeclared = hasReceipt("emergency-declared");
+      const recoveryApproved = hasReceipt(
+        "recovery-plan-approved-and-dispatched",
+      );
+      const emergencyAircraft = snapshot.aircraft.find(
+        ({ id }) => id === deck.emergency.aircraftId,
+      );
+      const emergencyResolved = emergencyAircraft?.flightPhase === "out-of-play";
+
+      // Exceptional-approval beat: protect first, then stage the Recovery
+      // Plan and let the Supervising Controller approve it.
+      if (emergencyDeclared && !recoveryApproved && !emergencyResolved) {
+        if (currentSnapshot().stagedRecoveryPlan) {
+          application.command({
+            type: "approve-recovery-plan",
+            actor: "supervising-controller",
+            expectedStateVersion: currentSnapshot().stateVersion,
+          });
+        } else {
+          application.command({
+            type: "stage-recovery-plan",
+            actor: "tower-agent",
+            planReference: "emergency-recovery",
+            runwayClearances: [
+              {
+                aircraftId: deck.emergency.aircraftId,
+                clearance: {
+                  kind: "clear-to-land",
+                  runwayId: progressOf(deck.emergency.aircraftId).runwayId,
+                  runwayEnd: progressOf(deck.emergency.aircraftId).runwayEnd,
+                },
+              },
+              {
+                aircraftId: deck.rejectedTakeoff.aircraftId,
+                clearance: {
+                  kind: "hold-short",
+                  runwayId: progressOf(deck.rejectedTakeoff.aircraftId)
+                    .runwayId,
+                  runwayEnd: progressOf(deck.rejectedTakeoff.aircraftId)
+                    .runwayEnd,
+                },
+              },
+            ],
+            expectedStateVersion: currentSnapshot().stateVersion,
+          });
+        }
+      }
+
+      // Unable/replanning beat: try to move the limited circuit aircraft
+      // during the emergency window.
+      if (emergencyDeclared && !unableIssued) {
+        const limited = snapshot.aircraft.find(
+          ({ id }) => id === deck.temporaryLimitation.aircraftId,
+        );
+        if (limited && limited.flightPhase !== "out-of-play") {
+          application.command({
+            type: "issue-tactical-instruction",
+            actor: "tower-agent",
+            aircraftId: deck.temporaryLimitation.aircraftId,
+            instruction: { speedKnots: 80 },
+            expectedStateVersion: currentSnapshot().stateVersion,
+          });
+          unableIssued = true;
+        }
+      }
+
+      // Routine autonomy: keep departures and arrivals flowing.
+      for (const aircraft of snapshot.aircraft) {
+        const progress = progressOf(aircraft.id);
+        if (
+          !progress ||
+          aircraft.flightPhase === "out-of-play" ||
+          (aircraft.activeRunwayClearance &&
+            aircraft.activeRunwayClearance.kind !== "hold-short")
+        ) {
+          continue;
+        }
+        if (
+          progress.role === "departure" &&
+          aircraft.flightPhase === "hold-short"
+        ) {
+          const isRejectionCast = aircraft.id === deck.rejectedTakeoff.aircraftId;
+          if (!isRejectionCast || (recoveryApproved && emergencyResolved)) {
+            issueAsTowerAgent(aircraft.id, {
+              kind: "clear-for-takeoff",
+              runwayId: progress.runwayId,
+              runwayEnd: progress.runwayEnd,
+            });
+          }
+          continue;
+        }
+        if (
+          progress.role === "arrival" &&
+          (aircraft.flightPhase === "inbound" ||
+            aircraft.flightPhase === "approach")
+        ) {
+          const isEmergency = aircraft.id === deck.emergency.aircraftId;
+          if (!isEmergency || recoveryApproved) {
+            issueAsTowerAgent(aircraft.id, {
+              kind: "clear-to-land",
+              runwayId: progress.runwayId,
+              runwayEnd: progress.runwayEnd,
+            });
+          }
+        }
+      }
+
+      advanceSteps(application, 10);
+    }
+
+    const finalSnapshot = currentSnapshot();
+    expect(finalSnapshot.shiftStatus).toBe("completed");
+    expect(finalSnapshot.simulationTimeMs).toBeLessThanOrEqual(660_000);
+    const actions = receiptsSoFar().map(({ action }) => action);
+    for (const requiredAction of [
+      "runway-clearance-issued",
+      "emergency-declared",
+      "recovery-plan-approved-and-dispatched",
+      "takeoff-rejected",
+      "pilot-go-around-executed",
+      "pilot-unable-reported",
+      "clearance-plan-tactical-instruction-edited",
+      "clearance-plan-dispatched",
+      "stable-flow-restored",
+      "shift-completed",
+    ]) {
+      expect(actions).toContain(requiredAction);
+    }
+    expect(
+      receiptsSoFar().some(
+        (receipt) =>
+          receipt.action === "pilot-go-around-executed" &&
+          receipt.summary?.includes("unstable approach"),
+      ),
+    ).toBe(true);
+  });
+
+  it("replays clearance-gated traffic deterministically from the same Scenario Seed", () => {
+    const runShift = () => {
+      const application = createFlowControlApplication({
+        scenarioSeed: "phase-5-causal-replay",
+        operatingPosture: "observe",
+      });
+      application.command({
+        type: "begin-shift",
+        actor: "tower-agent",
+        expectedStateVersion: 0,
+      });
+      advanceSteps(application, 50);
+      issueManualRunwayClearance(application, "fc-101", {
+        kind: "clear-for-takeoff",
+        runwayId: "09-27",
+        runwayEnd: "09",
+      });
+      advanceSteps(application, 400);
+      issueManualRunwayClearance(application, "fc-202", {
+        kind: "clear-to-land",
+        runwayId: "04-22",
+        runwayEnd: "04",
+      });
+      advanceSteps(application, 2_600);
+      return {
+        snapshot: application.query({ type: "tower-snapshot" }),
+        receipts: application.query({ type: "operational-receipts" }),
+        transmissions: application.query({ type: "transmissions" }),
+      };
+    };
+
+    expect(runShift()).toEqual(runShift());
   });
 
   it("models runway and intersection occupancy as shared timed resources", () => {
@@ -503,22 +1402,24 @@ describe("Shift lifecycle", () => {
         .runwayResources,
     ).toEqual({ runwayOccupancy: [], intersectionOccupancy: [] });
 
-    application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 100,
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "09",
     });
-    expect(
-      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
-        .runwayResources,
-    ).toEqual({
+    const rollingSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.runwayResources.runwayOccupancy.length > 0,
+      500,
+    );
+    expect(rollingSnapshot.runwayResources).toEqual({
       runwayOccupancy: [
         {
           runwayId: "09-27",
           aircraftId: "fc-101",
           callsign: "FLOW 101",
           operation: "departure",
-          clearsAtSimulationTimeMs: 30_000,
+          clearsAtSimulationTimeMs: expect.any(Number),
         },
       ],
       intersectionOccupancy: [
@@ -529,43 +1430,25 @@ describe("Shift lifecycle", () => {
         },
       ],
     });
+    const clearsAtSimulationTimeMs =
+      rollingSnapshot.runwayResources.runwayOccupancy[0]
+        .clearsAtSimulationTimeMs;
+    expect(clearsAtSimulationTimeMs).toBeGreaterThan(
+      rollingSnapshot.simulationTimeMs,
+    );
 
-    application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 200,
+    const clearedSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.runwayResources.runwayOccupancy.length === 0,
+      500,
+    );
+    expect(clearedSnapshot.runwayResources).toEqual({
+      runwayOccupancy: [],
+      intersectionOccupancy: [],
     });
-    expect(
-      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
-        .runwayResources,
-    ).toEqual({
-      runwayOccupancy: [
-        {
-          runwayId: "04-22",
-          aircraftId: "fc-202",
-          callsign: "FLOW 202",
-          operation: "arrival",
-          clearsAtSimulationTimeMs: 40_000,
-        },
-      ],
-      intersectionOccupancy: [
-        {
-          intersectionId: "primary-crosswind",
-          aircraftIds: ["fc-202"],
-          runwayIds: ["04-22"],
-        },
-      ],
-    });
-
-    application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 1_800,
-    });
-    expect(
-      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
-        .runwayResources,
-    ).toEqual({ runwayOccupancy: [], intersectionOccupancy: [] });
+    expect(clearedSnapshot.simulationTimeMs).toBeGreaterThanOrEqual(
+      clearsAtSimulationTimeMs,
+    );
   });
 
   it("records structured Clearances, Tactical Instructions, and delayed Pilot readbacks", () => {
@@ -703,11 +1586,19 @@ describe("Shift lifecycle", () => {
       actor: "tower-agent",
       expectedStateVersion: 0,
     });
-    application.command({
-      type: "advance-simulation",
-      actor: "simulation-clock",
-      steps: 100,
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "09",
     });
+    const rollingSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.runwayResources.runwayOccupancy.length > 0,
+      500,
+    );
+    const occupancyClearsAtSimulationTimeMs =
+      rollingSnapshot.runwayResources.runwayOccupancy[0]
+        .clearsAtSimulationTimeMs;
 
     const beforeEvaluation = {
       snapshot: application.query({ type: "tower-snapshot" }),
@@ -717,14 +1608,14 @@ describe("Shift lifecycle", () => {
     expect(
       application.query({
         type: "evaluate-clearance-set",
-        expectedStateVersion: 3,
+        expectedStateVersion: rollingSnapshot.stateVersion,
         runwayClearances: [
           {
             aircraftId: "fc-404",
             clearance: {
               kind: "clear-for-takeoff",
               runwayId: "09-27",
-              runwayEnd: "09",
+              runwayEnd: "27",
             },
           },
         ],
@@ -732,8 +1623,8 @@ describe("Shift lifecycle", () => {
     ).toEqual({
       status: "refusal",
       valid: false,
-      evaluatedStateVersion: 3,
-      simulationTimeMs: 10_000,
+      evaluatedStateVersion: rollingSnapshot.stateVersion,
+      simulationTimeMs: rollingSnapshot.simulationTimeMs,
       classification: "routine",
       affectedAircraft: ["fc-101", "fc-404"],
       conflicts: [
@@ -749,7 +1640,7 @@ describe("Shift lifecycle", () => {
         },
       ],
       constraints: [],
-      mustIssueBySimulationTimeMs: 30_000,
+      mustIssueBySimulationTimeMs: occupancyClearsAtSimulationTimeMs,
       nextAction: "wait-for-runway-resource",
     });
 
@@ -806,9 +1697,9 @@ describe("Shift lifecycle", () => {
     });
   });
 
-  it("predicts an upcoming shared-intersection conflict at a candidate Clearance's intended time", () => {
+  it("predicts a runway-separation conflict between two issued Clearances demanding the same runway window", () => {
     const application = createFlowControlApplication({
-      scenarioSeed: "phase-2-projective-evaluation",
+      scenarioSeed: "phase-5-predicted-demand",
       operatingPosture: "observe",
     });
     application.command({
@@ -817,53 +1708,33 @@ describe("Shift lifecycle", () => {
       expectedStateVersion: 0,
     });
 
-    expect(
-      application.query({
-        type: "evaluate-clearance-set",
-        expectedStateVersion: 1,
-        effectiveAtSimulationTimeMs: 30_000,
-        runwayClearances: [
-          {
-            aircraftId: "fc-404",
-            clearance: {
-              kind: "clear-for-takeoff",
-              runwayId: "09-27",
-              runwayEnd: "09",
-            },
-          },
-        ],
-      }),
-    ).toEqual({
-      status: "refusal",
-      valid: false,
-      evaluatedStateVersion: 1,
-      simulationTimeMs: 0,
-      projectedSimulationTimeMs: 30_000,
-      classification: "routine",
-      affectedAircraft: ["fc-202", "fc-404", "fc-101"],
-      conflicts: [
-        {
-          kind: "intersection-occupied",
-          resourceId: "primary-crosswind",
-          aircraftIds: ["fc-202", "fc-404"],
-        },
-      ],
-      constraints: [
-        {
-          kind: "wake-separation",
-          resourceId: "09-27",
-          leaderAircraftId: "fc-101",
-          followerAircraftId: "fc-404",
-          requiredSpacingMs: 5_000,
-          availableSpacingMs: 0,
-        },
-      ],
-      mustIssueBySimulationTimeMs: 40_000,
-      nextAction: "wait-for-runway-resource",
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "09",
     });
+    issueManualRunwayClearance(application, "fc-404", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "27",
+    });
+
+    const conflicts = application.query({ type: "active-conflicts" }) as {
+      current: Array<Record<string, unknown>>;
+      predicted: Array<Record<string, unknown>>;
+    };
+    expect(conflicts.current).toEqual([]);
+    expect(conflicts.predicted).toEqual([
+      expect.objectContaining({
+        kind: "runway-separation",
+        status: "predicted",
+        resourceId: "09-27",
+        aircraftIds: ["fc-101", "fc-404"],
+      }),
+    ]);
   });
 
-  it("refuses an arrival sequenced too soon behind a heavy aircraft after runway occupancy clears", () => {
+  it("refuses a Clearance sequenced too soon behind the preceding runway occupant's wake", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-2-wake-separation",
       operatingPosture: "observe",
@@ -874,39 +1745,55 @@ describe("Shift lifecycle", () => {
       expectedStateVersion: 0,
     });
 
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "clear-for-takeoff",
+      runwayId: "09-27",
+      runwayEnd: "09",
+    });
+    const rollingSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.runwayResources.runwayOccupancy.length > 0,
+      500,
+    );
+    const releaseAtSimulationTimeMs =
+      rollingSnapshot.runwayResources.runwayOccupancy[0]
+        .clearsAtSimulationTimeMs;
+    const evaluationSnapshot = advanceUntil(
+      application,
+      (snapshot) => snapshot.runwayResources.runwayOccupancy.length === 0,
+      500,
+    );
+
     expect(
       application.query({
         type: "evaluate-clearance-set",
-        expectedStateVersion: 1,
-        effectiveAtSimulationTimeMs: 200_000,
+        expectedStateVersion: evaluationSnapshot.stateVersion,
+        effectiveAtSimulationTimeMs: releaseAtSimulationTimeMs + 2_000,
         runwayClearances: [
           {
-            aircraftId: "fc-202",
+            aircraftId: "fc-404",
             clearance: {
-              kind: "clear-to-land",
+              kind: "clear-for-takeoff",
               runwayId: "09-27",
-              runwayEnd: "09",
+              runwayEnd: "27",
             },
           },
         ],
       }),
-    ).toEqual({
+    ).toMatchObject({
       status: "refusal",
       valid: false,
-      evaluatedStateVersion: 1,
-      simulationTimeMs: 0,
-      projectedSimulationTimeMs: 200_000,
       classification: "routine",
-      affectedAircraft: ["fc-505", "fc-202"],
+      affectedAircraft: ["fc-101", "fc-404"],
       conflicts: [],
       constraints: [
         {
           kind: "wake-separation",
           resourceId: "09-27",
-          leaderAircraftId: "fc-505",
-          followerAircraftId: "fc-202",
-          requiredSpacingMs: 20_000,
-          availableSpacingMs: 10_000,
+          leaderAircraftId: "fc-101",
+          followerAircraftId: "fc-404",
+          requiredSpacingMs: 5_000,
+          availableSpacingMs: 2_000,
         },
       ],
       nextAction: "delay-for-wake-separation",
