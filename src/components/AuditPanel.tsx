@@ -8,6 +8,9 @@ export type OperationalReceiptRecord = {
   stateVersionAfter: number;
   /** A concise declared operational outcome, never private model reasoning. */
   summary?: string;
+  webMcp?: {
+    result?: { status?: string };
+  };
 };
 
 type AuditPanelProps = {

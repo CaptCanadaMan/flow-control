@@ -7,6 +7,14 @@ import { ShiftScorecard } from "./ShiftScorecard";
 const receipts: OperationalReceiptRecord[] = [
   {
     actor: "tower-agent",
+    action: "webmcp-tool-executed",
+    simulationTimeMs: 4_000,
+    stateVersionBefore: 1,
+    stateVersionAfter: 1,
+    webMcp: { result: { status: "refusal" } },
+  },
+  {
+    actor: "tower-agent",
     action: "clearance-plan-staged",
     simulationTimeMs: 5_000,
     stateVersionBefore: 1,
@@ -51,7 +59,7 @@ describe("ShiftScorecard", () => {
     expect(view).toContain("Supervising Controller actions 2");
     expect(view).toContain("Approvals 1");
     expect(view).toContain("Other interventions 1");
-    expect(view).toContain("Refusal records 1");
+    expect(view).toContain("Refusal records 2");
     expect(view).toContain("Response time and traffic delay were not recorded in the supplied evidence.");
   });
 

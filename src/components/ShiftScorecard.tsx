@@ -33,7 +33,10 @@ function statusLabel(status: ShiftScorecardSnapshot["shiftStatus"]) {
 }
 
 export function ShiftScorecard({ snapshot, receipts }: ShiftScorecardProps) {
-  const towerAgentActions = receipts.filter(({ actor }) => actor === "tower-agent").length;
+  const towerAgentActions = receipts.filter(
+    ({ actor, action }) =>
+      actor === "tower-agent" && action !== "webmcp-tool-executed",
+  ).length;
   const supervisingControllerActions = receipts.filter(
     ({ actor }) => actor === "supervising-controller",
   ).length;
@@ -41,7 +44,12 @@ export function ShiftScorecard({ snapshot, receipts }: ShiftScorecardProps) {
   const otherInterventions = receipts.filter(
     ({ actor, action }) => actor === "supervising-controller" && !action.includes("approved"),
   ).length;
-  const refusalRecords = receipts.filter(({ action }) => action.includes("refus")).length;
+  const refusalRecords = receipts.filter(
+    ({ action, webMcp }) =>
+      action.includes("refus") ||
+      webMcp?.result?.status === "refusal" ||
+      webMcp?.result?.status === "stale",
+  ).length;
   const completed = snapshot.shiftStatus === "completed";
   const incomplete = snapshot.shiftStatus === "incomplete";
 
