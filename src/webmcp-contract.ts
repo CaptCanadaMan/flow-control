@@ -42,6 +42,65 @@ export const TOWER_SNAPSHOT_SECTIONS = [
 
 export const READ_DETAIL_LEVELS = ["compact", "full"] as const;
 
+const RUNWAY_CLEARANCE_SCHEMA = strictObjectSchema(
+  {
+    kind: {
+      type: "string",
+      enum: [
+        "hold-short",
+        "line-up-and-wait",
+        "cancel-runway-clearance",
+        "clear-for-takeoff",
+        "clear-to-land",
+        "clear-touch-and-go",
+        "go-around",
+      ],
+      description: "The structured runway operation to dispatch.",
+    },
+    runwayId: {
+      type: "string",
+      enum: ["09-27", "04-22"],
+      description: "The runway resource used by the Clearance.",
+    },
+    runwayEnd: {
+      type: "string",
+      enum: ["09", "27", "04", "22"],
+      description: "The matching runway end used in the Transmission.",
+    },
+  },
+  ["kind", "runwayId", "runwayEnd"],
+);
+RUNWAY_CLEARANCE_SCHEMA.allOf = [
+  {
+    if: {
+      properties: { runwayId: { const: "09-27" } },
+      required: ["runwayId"],
+    },
+    then: {
+      properties: { runwayEnd: { enum: ["09", "27"] } },
+      required: ["runwayEnd"],
+    },
+  },
+  {
+    if: {
+      properties: { runwayId: { const: "04-22" } },
+      required: ["runwayId"],
+    },
+    then: {
+      properties: { runwayEnd: { enum: ["04", "22"] } },
+      required: ["runwayEnd"],
+    },
+  },
+];
+
+const CANDIDATE_RUNWAY_CLEARANCE_SCHEMA = strictObjectSchema(
+  {
+    aircraftId: { type: "string", minLength: 1 },
+    clearance: RUNWAY_CLEARANCE_SCHEMA,
+  },
+  ["aircraftId", "clearance"],
+);
+
 export const WEBMCP_TOOL_CONTRACTS = {
   begin_tower_shift: {
     description:
@@ -103,8 +162,19 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   evaluate_clearance_set: {
     description:
-      "Evaluate a counterfactual set of runway Clearances without changing Shift state.",
-    inputSchema: strictObjectSchema(),
+      "Evaluate one or more counterfactual runway Clearances at the required State Version without staging, dispatching, or changing Shift state.",
+    inputSchema: strictObjectSchema(
+      {
+        expectedStateVersion: { type: "integer", minimum: 0 },
+        projectedSimulationTimeMs: { type: "integer", minimum: 0 },
+        runwayClearances: {
+          type: "array",
+          minItems: 1,
+          items: CANDIDATE_RUNWAY_CLEARANCE_SCHEMA,
+        },
+      },
+      ["expectedStateVersion", "runwayClearances"],
+    ),
     annotations: { readOnlyHint: true },
   },
   stage_clearance_plan: {

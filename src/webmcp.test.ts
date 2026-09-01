@@ -625,4 +625,251 @@ describe("WebMCP capability lifecycle", () => {
       },
     });
   });
+
+  it("evaluates a projected Clearance set through a strict read-only contract without mutating the Shift", async () => {
+    const registeredTools = new Map<
+      string,
+      {
+        description: string;
+        inputSchema: Record<string, unknown>;
+        annotations?: { readOnlyHint?: boolean };
+        execute: (input: unknown) => unknown;
+      }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        description: string;
+        inputSchema: Record<string, unknown>;
+        annotations?: { readOnlyHint?: boolean };
+        execute: (input: unknown) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    let wallClockTime = 0;
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-4-evaluate-valid",
+      operatingPosture: "observe",
+      wallClockNow: () => wallClockTime,
+      connectionLease: {
+        warningAfterMs: 1_000,
+        unavailableAfterMs: 2_000,
+      },
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+    const before = application.query({ type: "tower-snapshot" });
+
+    const evaluationTool = registeredTools.get("evaluate_clearance_set");
+    wallClockTime = 900;
+    const result = await evaluationTool?.execute({
+      expectedStateVersion: 1,
+      projectedSimulationTimeMs: 160_000,
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+    });
+
+    expect(evaluationTool?.description).toContain("counterfactual");
+    expect(evaluationTool?.annotations).toEqual({ readOnlyHint: true });
+    expect(evaluationTool?.inputSchema).toMatchObject({
+      type: "object",
+      required: [
+        "expectedStateVersion",
+        "runwayClearances",
+      ],
+      additionalProperties: false,
+      properties: {
+        expectedStateVersion: { type: "integer", minimum: 0 },
+        projectedSimulationTimeMs: { type: "integer", minimum: 0 },
+        runwayClearances: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            required: ["aircraftId", "clearance"],
+            additionalProperties: false,
+            properties: {
+              aircraftId: { type: "string", minLength: 1 },
+              clearance: {
+                type: "object",
+                required: ["kind", "runwayId", "runwayEnd"],
+                additionalProperties: false,
+                allOf: expect.arrayContaining([
+                  {
+                    if: {
+                      properties: { runwayId: { const: "09-27" } },
+                      required: ["runwayId"],
+                    },
+                    then: {
+                      properties: { runwayEnd: { enum: ["09", "27"] } },
+                      required: ["runwayEnd"],
+                    },
+                  },
+                  {
+                    if: {
+                      properties: { runwayId: { const: "04-22" } },
+                      required: ["runwayId"],
+                    },
+                    then: {
+                      properties: { runwayEnd: { enum: ["04", "22"] } },
+                      required: ["runwayEnd"],
+                    },
+                  },
+                ]),
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      status: "success",
+      stateVersion: 1,
+      simulationTimeMs: 0,
+      affectedAircraft: [],
+      summary: "Clearance-set evaluation returned.",
+      nextAction: "continue",
+      data: {
+        valid: true,
+        evaluatedStateVersion: 1,
+        simulationTimeMs: 0,
+        projectedSimulationTimeMs: 160_000,
+        classification: "routine",
+        conflicts: [],
+        constraints: [],
+      },
+    });
+    expect(application.query({ type: "tower-snapshot" })).toEqual(before);
+    wallClockTime = 1_800;
+    expect(application.query({ type: "connection-health" })).toEqual({
+      state: "healthy",
+      silenceMs: 900,
+    });
+  });
+
+  it("returns a stale evaluation without changing the Shift", async () => {
+    const registeredTools = new Map<
+      string,
+      { execute: (input: unknown) => unknown }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        execute: (input: unknown) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-4-evaluate-stale",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+    const before = application.query({ type: "tower-snapshot" });
+
+    const result = await registeredTools.get("evaluate_clearance_set")?.execute({
+      expectedStateVersion: 0,
+      runwayClearances: [
+        {
+          aircraftId: "fc-101",
+          clearance: {
+            kind: "clear-for-takeoff",
+            runwayId: "09-27",
+            runwayEnd: "09",
+          },
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      status: "stale",
+      stateVersion: 1,
+      simulationTimeMs: 0,
+      affectedAircraft: [],
+      summary: "Clearance-set evaluation requires the current State Version.",
+      nextAction: "get_tower_snapshot",
+      data: {
+        status: "stale",
+        evaluatedStateVersion: 1,
+      },
+    });
+    expect(application.query({ type: "tower-snapshot" })).toEqual(before);
+  });
+
+  it("returns a refusal evaluation with the deterministic constraint details in data", async () => {
+    const registeredTools = new Map<
+      string,
+      { execute: (input: unknown) => unknown }
+    >();
+    const modelContext = {
+      async registerTool(tool: {
+        name: string;
+        execute: (input: unknown) => unknown;
+      }) {
+        registeredTools.set(tool.name, tool);
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-4-evaluate-refusal",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+    const before = application.query({ type: "tower-snapshot" });
+
+    const result = await registeredTools.get("evaluate_clearance_set")?.execute({
+      expectedStateVersion: 1,
+      runwayClearances: [
+        {
+          aircraftId: "fc-505",
+          clearance: {
+            kind: "clear-to-land",
+            runwayId: "04-22",
+            runwayEnd: "22",
+          },
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      status: "refusal",
+      stateVersion: 1,
+      simulationTimeMs: 0,
+      affectedAircraft: ["fc-505"],
+      summary: "Clearance-set evaluation returned.",
+      nextAction: "select-suitable-runway",
+      data: {
+        valid: false,
+        evaluatedStateVersion: 1,
+        classification: "routine",
+        conflicts: [],
+        constraints: [
+          {
+            kind: "runway-capability",
+            aircraftId: "fc-505",
+            resourceId: "04-22",
+            requiredMinimumRunway: { lengthFeet: 9_500, widthFeet: 150 },
+            availableRunway: { lengthFeet: 5_500, widthFeet: 100 },
+          },
+        ],
+      },
+    });
+    expect(application.query({ type: "tower-snapshot" })).toEqual(before);
+  });
 });

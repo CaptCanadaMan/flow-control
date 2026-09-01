@@ -31,6 +31,22 @@ export type ModelContext = {
   ): Promise<void>;
 };
 
+type CandidateRunwayClearanceInput = {
+  aircraftId: string;
+  clearance: {
+    kind:
+      | "hold-short"
+      | "line-up-and-wait"
+      | "cancel-runway-clearance"
+      | "clear-for-takeoff"
+      | "clear-to-land"
+      | "clear-touch-and-go"
+      | "go-around";
+    runwayId: "09-27" | "04-22";
+    runwayEnd: "09" | "27" | "04" | "22";
+  };
+};
+
 function executionSignal(
   context?: AbortSignal | { signal?: AbortSignal },
 ) {
@@ -373,6 +389,39 @@ export async function connectWebMcp({
                 : `${conflicts.current.length} current and ${conflicts.predicted.length} predicted operational conflicts returned.`,
             nextAction: "wait_for_tower_event",
             data: conflicts,
+          });
+        },
+      };
+    }
+
+    if (capability === "evaluate_clearance_set") {
+      return {
+        name: capability,
+        ...contract,
+        execute(input) {
+          renewAgentLease();
+          const {
+            expectedStateVersion,
+            projectedSimulationTimeMs,
+            runwayClearances,
+          } = input as {
+            expectedStateVersion: number;
+            projectedSimulationTimeMs?: number;
+            runwayClearances: CandidateRunwayClearanceInput[];
+          };
+          const evaluation = application.query({
+            type: "evaluate-clearance-set",
+            expectedStateVersion,
+            ...(projectedSimulationTimeMs === undefined
+              ? {}
+              : { effectiveAtSimulationTimeMs: projectedSimulationTimeMs }),
+            runwayClearances,
+          });
+          return resultEnvelope({
+            application,
+            outcome: recordOutcome(evaluation),
+            summary: "Clearance-set evaluation returned.",
+            data: evaluation,
           });
         },
       };
