@@ -170,6 +170,13 @@ const EXPECTED_AIRCRAFT_CAPABILITY_PROFILES = [
 
 type FlowControlApplication = ReturnType<typeof createFlowControlApplication>;
 
+const RUNWAY_END_THRESHOLDS: Record<string, { east: number; north: number }> = {
+  "09": { east: -0.947, north: 0 },
+  "27": { east: 0.947, north: 0 },
+  "04": { east: -0.291, north: -0.347 },
+  "22": { east: 0.291, north: 0.347 },
+};
+
 function advanceSteps(application: FlowControlApplication, steps: number) {
   application.command({
     type: "advance-simulation",
@@ -684,7 +691,13 @@ describe("Shift lifecycle", () => {
       expect(deck.independentGoAround.aircraftId).not.toBe(
         deck.emergency.aircraftId,
       );
-      expect(intentionOf(deck.temporaryLimitation.aircraftId)).toBe("circuit");
+      expect(intentionOf(deck.temporaryLimitation.aircraftId)).toBe("arrival");
+      expect(deck.temporaryLimitation.aircraftId).not.toBe(
+        deck.emergency.aircraftId,
+      );
+      expect(deck.temporaryLimitation.aircraftId).not.toBe(
+        deck.independentGoAround.aircraftId,
+      );
       expect(deck.emergency.status).toBe("pending");
       expect(deck.rejectedTakeoff.status).toBe("pending");
       expect(deck.independentGoAround.status).toBe("pending");
@@ -839,13 +852,7 @@ describe("Shift lifecycle", () => {
         id !== scenario.eventDeck.emergency.aircraftId,
     ) as string;
     const targetProgress = scenario.aircraftProgress[targetId];
-    const thresholds: Record<string, { east: number; north: number }> = {
-      "09": { east: -0.947, north: 0 },
-      "27": { east: 0.947, north: 0 },
-      "04": { east: -0.291, north: -0.347 },
-      "22": { east: 0.291, north: 0.347 },
-    };
-    const threshold = thresholds[targetProgress.runwayEnd];
+    const threshold = RUNWAY_END_THRESHOLDS[targetProgress.runwayEnd];
     const application = createFlowControlApplication({
       scenarioSeed,
       operatingPosture: "observe",
@@ -948,7 +955,7 @@ describe("Shift lifecycle", () => {
     const castProgress = scenario.aircraftProgress[castId];
     const application = createFlowControlApplication({
       scenarioSeed,
-      operatingPosture: "assist",
+      operatingPosture: "take-the-sector",
     });
     application.command({
       type: "begin-shift",
@@ -1042,6 +1049,26 @@ describe("Shift lifecycle", () => {
         "hold-short",
       1_500,
     );
+
+    expect(
+      application.command({
+        type: "issue-runway-clearance",
+        actor: "tower-agent",
+        aircraftId: castId,
+        clearance: {
+          kind: "clear-for-takeoff",
+          runwayId: castProgress.runwayId,
+          runwayEnd: castProgress.runwayEnd,
+        },
+        expectedStateVersion: (
+          application.query({ type: "tower-snapshot" }) as TowerSnapshot
+        ).stateVersion,
+      }),
+    ).toMatchObject({
+      status: "approval-required",
+      nextAction: "stage_recovery_plan",
+    });
+
     issueManualRunwayClearance(application, castId, {
       kind: "clear-for-takeoff",
       runwayId: castProgress.runwayId,
@@ -1057,6 +1084,141 @@ describe("Shift lifecycle", () => {
     expect(
       departedSnapshot.aircraft.find(({ id }) => id === castId),
     ).toMatchObject({ exit: "departed" });
+  });
+
+  it("never fires the rejected takeoff without an aligned arrival and refuses to complete the Shift", () => {
+    const scenarioSeed = "phase-5-unaligned-rejection";
+    const scenario = generateScenario(scenarioSeed);
+    const deck = scenario.eventDeck;
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    // Land every arrival first (handling unable and independent go-around
+    // replanning) while approving the emergency Recovery Plan, so no arrival
+    // remains airborne when the departures finally roll.
+    for (let iteration = 0; iteration < 800; iteration += 1) {
+      const snapshot = application.query({
+        type: "tower-snapshot",
+      }) as TowerSnapshot;
+      const receipts = application.query({
+        type: "operational-receipts",
+      }) as Array<{ action: string; simulationTimeMs: number }>;
+      const arrivalsRemaining = snapshot.aircraft.some((aircraft) => {
+        const progress = scenario.aircraftProgress[aircraft.id];
+        return (
+          progress?.role === "arrival" && aircraft.flightPhase !== "out-of-play"
+        );
+      });
+      if (!arrivalsRemaining) {
+        break;
+      }
+      const emergencyDeclared = receipts.some(
+        ({ action }) => action === "emergency-declared",
+      );
+      const recoveryApproved = receipts.some(
+        ({ action }) => action === "recovery-plan-approved-and-dispatched",
+      );
+      if (emergencyDeclared && !recoveryApproved) {
+        if (snapshot.stagedRecoveryPlan) {
+          application.command({
+            type: "approve-recovery-plan",
+            actor: "supervising-controller",
+            expectedStateVersion: snapshot.stateVersion,
+          });
+        } else {
+          application.command({
+            type: "stage-recovery-plan",
+            actor: "tower-agent",
+            planReference: "unaligned-emergency-recovery",
+            runwayClearances: [
+              {
+                aircraftId: deck.emergency.aircraftId,
+                clearance: {
+                  kind: "clear-to-land",
+                  runwayId:
+                    scenario.aircraftProgress[deck.emergency.aircraftId]
+                      .runwayId,
+                  runwayEnd:
+                    scenario.aircraftProgress[deck.emergency.aircraftId]
+                      .runwayEnd,
+                },
+              },
+              {
+                aircraftId: deck.rejectedTakeoff.aircraftId,
+                clearance: {
+                  kind: "hold-short",
+                  runwayId:
+                    scenario.aircraftProgress[deck.rejectedTakeoff.aircraftId]
+                      .runwayId,
+                  runwayEnd:
+                    scenario.aircraftProgress[deck.rejectedTakeoff.aircraftId]
+                      .runwayEnd,
+                },
+              },
+            ],
+            expectedStateVersion: snapshot.stateVersion,
+          });
+        }
+      }
+      for (const aircraft of snapshot.aircraft) {
+        const progress = scenario.aircraftProgress[aircraft.id];
+        if (
+          progress?.role !== "arrival" ||
+          aircraft.flightPhase === "out-of-play" ||
+          aircraft.activeRunwayClearance
+        ) {
+          continue;
+        }
+        if (
+          aircraft.id === deck.emergency.aircraftId &&
+          emergencyDeclared &&
+          !recoveryApproved
+        ) {
+          continue;
+        }
+        issueManualRunwayClearance(application, aircraft.id, {
+          kind: "clear-to-land",
+          runwayId: progress.runwayId,
+          runwayEnd: progress.runwayEnd,
+        });
+      }
+      advanceSteps(application, 10);
+    }
+
+    // With no arrivals airborne, both departures lift off unrejected.
+    for (const departureId of ["fc-101", "fc-404"]) {
+      issueManualRunwayClearance(application, departureId, {
+        kind: "clear-for-takeoff",
+        runwayId: scenario.aircraftProgress[departureId].runwayId,
+        runwayEnd: scenario.aircraftProgress[departureId].runwayEnd,
+      });
+      advanceUntil(
+        application,
+        (snapshot) =>
+          snapshot.aircraft.find(({ id }) => id === departureId)?.flightPhase ===
+          "out-of-play",
+        4_000,
+      );
+    }
+    advanceSteps(application, 600);
+
+    const receipts = application.query({
+      type: "operational-receipts",
+    }) as Array<{ action: string }>;
+    expect(
+      receipts.some(({ action }) => action === "takeoff-rejected"),
+    ).toBe(false);
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .shiftStatus,
+    ).toBe("active");
   });
 
   it("reports an authored unable limitation and treats it as a replanning event", () => {
@@ -1160,7 +1322,6 @@ describe("Shift lifecycle", () => {
       });
 
     let modificationDone = false;
-    let unableIssued = false;
 
     for (let iteration = 0; iteration < 900; iteration += 1) {
       const snapshot = currentSnapshot();
@@ -1263,25 +1424,95 @@ describe("Shift lifecycle", () => {
         }
       }
 
-      // Unable/replanning beat: try to move the limited circuit aircraft
-      // during the emergency window.
-      if (emergencyDeclared && !unableIssued) {
-        const limited = snapshot.aircraft.find(
-          ({ id }) => id === deck.temporaryLimitation.aircraftId,
+      // Rejected-takeoff recovery: identify the rejected aircraft from its
+      // receipt, then stage and approve the Exceptional Recovery that
+      // re-clears it alongside a disrupted arrival.
+      const rejectionReceipt = receiptsSoFar().find(
+        (receipt) => receipt.action === "takeoff-rejected",
+      );
+      const rejectedAircraftId = rejectionReceipt
+        ? snapshot.aircraft.find(({ callsign }) =>
+            rejectionReceipt.summary?.startsWith(callsign),
+          )?.id
+        : undefined;
+      const rejectionRecoveryApproved =
+        !!rejectionReceipt &&
+        receiptsSoFar().some(
+          (receipt) =>
+            receipt.action === "recovery-plan-approved-and-dispatched" &&
+            receipt.simulationTimeMs >= rejectionReceipt.simulationTimeMs,
         );
-        if (limited && limited.flightPhase !== "out-of-play") {
-          application.command({
-            type: "issue-tactical-instruction",
-            actor: "tower-agent",
-            aircraftId: deck.temporaryLimitation.aircraftId,
-            instruction: { speedKnots: 80 },
-            expectedStateVersion: currentSnapshot().stateVersion,
-          });
-          unableIssued = true;
+      if (rejectionReceipt && rejectedAircraftId && !rejectionRecoveryApproved) {
+        const rejectedAircraft = snapshot.aircraft.find(
+          ({ id }) => id === rejectedAircraftId,
+        );
+        if (
+          rejectedAircraft?.flightPhase === "hold-short" &&
+          !rejectedAircraft.activeRunwayClearance
+        ) {
+          if (currentSnapshot().stagedRecoveryPlan) {
+            application.command({
+              type: "approve-recovery-plan",
+              actor: "supervising-controller",
+              expectedStateVersion: currentSnapshot().stateVersion,
+            });
+          } else {
+            const disruptedArrival = snapshot.aircraft.find((aircraft) => {
+              const progress = progressOf(aircraft.id);
+              return (
+                progress?.role === "arrival" &&
+                aircraft.flightPhase !== "out-of-play"
+              );
+            });
+            if (disruptedArrival) {
+              application.command({
+                type: "stage-recovery-plan",
+                actor: "tower-agent",
+                planReference: "rejected-takeoff-recovery",
+                runwayClearances: [
+                  {
+                    aircraftId: rejectedAircraftId,
+                    clearance: {
+                      kind: "clear-for-takeoff",
+                      runwayId: progressOf(rejectedAircraftId).runwayId,
+                      runwayEnd: progressOf(rejectedAircraftId).runwayEnd,
+                    },
+                  },
+                  {
+                    aircraftId: disruptedArrival.id,
+                    clearance: {
+                      kind: "clear-to-land",
+                      runwayId: progressOf(disruptedArrival.id).runwayId,
+                      runwayEnd: progressOf(disruptedArrival.id).runwayEnd,
+                    },
+                  },
+                ],
+                expectedStateVersion: currentSnapshot().stateVersion,
+              });
+            }
+          }
         }
       }
 
       // Routine autonomy: keep departures and arrivals flowing.
+      const arrivalAligned = snapshot.aircraft.some((aircraft) => {
+        const progress = progressOf(aircraft.id);
+        if (
+          progress?.role !== "arrival" ||
+          aircraft.flightPhase === "out-of-play" ||
+          (aircraft.flightPhase !== "inbound" &&
+            aircraft.flightPhase !== "approach")
+        ) {
+          return false;
+        }
+        const threshold = RUNWAY_END_THRESHOLDS[progress.runwayEnd];
+        return (
+          Math.hypot(
+            aircraft.position.eastNauticalMiles - threshold.east,
+            aircraft.position.northNauticalMiles - threshold.north,
+          ) < 3
+        );
+      });
       for (const aircraft of snapshot.aircraft) {
         const progress = progressOf(aircraft.id);
         if (
@@ -1297,7 +1528,13 @@ describe("Shift lifecycle", () => {
           aircraft.flightPhase === "hold-short"
         ) {
           const isRejectionCast = aircraft.id === deck.rejectedTakeoff.aircraftId;
-          if (!isRejectionCast || (recoveryApproved && emergencyResolved)) {
+          if (aircraft.id === rejectedAircraftId && !rejectionRecoveryApproved) {
+            continue;
+          }
+          if (
+            !isRejectionCast ||
+            (recoveryApproved && emergencyResolved && arrivalAligned)
+          ) {
             issueAsTowerAgent(aircraft.id, {
               kind: "clear-for-takeoff",
               runwayId: progress.runwayId,
@@ -1350,6 +1587,19 @@ describe("Shift lifecycle", () => {
           receipt.summary?.includes("unstable approach"),
       ),
     ).toBe(true);
+
+    // The rejected-takeoff recovery crossed the approval boundary after the
+    // rejection rather than resolving through a routine re-clearance.
+    const rejectionAt = receiptsSoFar().find(
+      ({ action }) => action === "takeoff-rejected",
+    )?.simulationTimeMs;
+    expect(
+      receiptsSoFar().filter(
+        (receipt) =>
+          receipt.action === "recovery-plan-approved-and-dispatched" &&
+          receipt.simulationTimeMs >= (rejectionAt ?? Number.POSITIVE_INFINITY),
+      ).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("replays clearance-gated traffic deterministically from the same Scenario Seed", () => {
