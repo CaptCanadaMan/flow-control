@@ -4,11 +4,13 @@ import { createRoot } from "react-dom/client";
 import { App, type ConnectionHealth } from "./App";
 import {
   createFlowControlApplication,
+  FIRST_LAUNCH_SCENARIO_SEED,
   type TowerSnapshot,
 } from "./application";
 import type { ShiftPace } from "./components/StartupPanel";
 import type { OperationalReceiptRecord } from "./components/AuditPanel";
 import { armShift } from "./shift-lifecycle";
+import { createSimulationTicker } from "./simulation-ticker";
 import { connectWebMcp, type ModelContext } from "./webmcp";
 import "./styles.css";
 
@@ -24,9 +26,21 @@ const modelContext = (
 
 type FlowControlApplication = ReturnType<typeof createFlowControlApplication>;
 
+// The first launch always arms the polished deterministic Scenario Seed; a
+// future New Shift action rerolls with a unique seed via createShiftIdentifier.
 function createShiftIdentifier() {
   const randomId = globalThis.crypto?.randomUUID?.();
   return randomId ? `shift-${randomId}` : `shift-${Date.now().toString(36)}`;
+}
+
+let hasArmedFirstShift = false;
+
+function nextScenarioSeed() {
+  if (!hasArmedFirstShift) {
+    hasArmedFirstShift = true;
+    return FIRST_LAUNCH_SCENARIO_SEED;
+  }
+  return createShiftIdentifier();
 }
 
 function FlowControlPage() {
@@ -55,7 +69,7 @@ function FlowControlPage() {
         pace,
         operatingPosture: initialOperatingPosture,
       },
-      { scenarioSeed: createShiftIdentifier() },
+      { scenarioSeed: nextScenarioSeed() },
     );
     applicationReference.current = armedApplication;
     setApplication(armedApplication);
@@ -87,6 +101,27 @@ function FlowControlPage() {
       setStartupCopyStatus("Copy was not permitted. Select the prompt and copy it manually.");
     }
   }, []);
+
+  useEffect(() => {
+    if (!application || snapshot?.shiftStatus !== "active") {
+      return;
+    }
+
+    const ticker = createSimulationTicker({
+      dispatchSteps: (steps) => {
+        application.command({
+          type: "advance-simulation",
+          actor: "simulation-clock",
+          steps,
+        });
+      },
+    });
+    ticker.start();
+
+    return () => {
+      ticker.stop();
+    };
+  }, [application, snapshot?.shiftStatus]);
 
   useEffect(() => {
     if (!application) {
