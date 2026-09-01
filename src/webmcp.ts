@@ -1,4 +1,10 @@
-import type { FlowControlApplication, TowerSnapshot } from "./application";
+import type {
+  ActiveConflictScope,
+  FlowControlApplication,
+  TowerSnapshot,
+  TowerSnapshotDetail,
+  TowerSnapshotSection,
+} from "./application";
 import {
   isWebMcpCapability,
   WEBMCP_TOOL_CONTRACTS,
@@ -238,11 +244,17 @@ export async function connectWebMcp({
       return {
         name: capability,
         ...contract,
-        execute() {
+        execute(input) {
           renewAgentLease();
+          const { sections, detail = "compact" } = input as {
+            sections?: TowerSnapshotSection[];
+            detail?: TowerSnapshotDetail;
+          };
           const snapshot = application.query({
             type: "tower-snapshot",
-          }) as TowerSnapshot;
+            sections,
+            detail,
+          });
           return resultEnvelope({
             application,
             summary: "Tower snapshot returned.",
@@ -291,6 +303,77 @@ export async function connectWebMcp({
                 active: false,
               });
             });
+        },
+      };
+    }
+
+    if (capability === "get_selected_context") {
+      return {
+        name: capability,
+        ...contract,
+        execute() {
+          renewAgentLease();
+          const selectedContext = application.query({
+            type: "selected-context",
+          }) as {
+            selectionStatus: "none" | "selected" | "unavailable";
+            selectedAircraftId?: string;
+          };
+          return resultEnvelope({
+            application,
+            outcome: {
+              affectedAircraft: selectedContext.selectedAircraftId
+                ? [selectedContext.selectedAircraftId]
+                : [],
+            },
+            summary: "Supervising Controller selection returned.",
+            nextAction: "continue",
+            data: selectedContext,
+          });
+        },
+      };
+    }
+
+    if (capability === "get_active_conflicts") {
+      return {
+        name: capability,
+        ...contract,
+        execute(input) {
+          renewAgentLease();
+          const {
+            scope = "all",
+            detail = "compact",
+            lookaheadMs = 120_000,
+          } = input as {
+            scope?: ActiveConflictScope;
+            detail?: TowerSnapshotDetail;
+            lookaheadMs?: number;
+          };
+          const conflicts = application.query({
+            type: "active-conflicts",
+            scope,
+            detail,
+            lookaheadMs,
+          }) as {
+            current: Array<{ aircraftIds: string[] }>;
+            predicted: Array<{ aircraftIds: string[] }>;
+          };
+          const allConflicts = [...conflicts.current, ...conflicts.predicted];
+          const affectedAircraft = [
+            ...new Set(
+              allConflicts.flatMap(({ aircraftIds }) => aircraftIds),
+            ),
+          ];
+          return resultEnvelope({
+            application,
+            outcome: { affectedAircraft },
+            summary:
+              allConflicts.length === 0
+                ? "No current or predicted operational conflicts."
+                : `${conflicts.current.length} current and ${conflicts.predicted.length} predicted operational conflicts returned.`,
+            nextAction: "wait_for_tower_event",
+            data: conflicts,
+          });
         },
       };
     }

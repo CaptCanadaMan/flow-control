@@ -31,6 +31,17 @@ export function strictObjectSchema(
   };
 }
 
+export const TOWER_SNAPSHOT_SECTIONS = [
+  "authority",
+  "weather",
+  "runways",
+  "traffic",
+  "plans",
+  "transmissions",
+] as const;
+
+export const READ_DETAIL_LEVELS = ["compact", "full"] as const;
+
 export const WEBMCP_TOOL_CONTRACTS = {
   begin_tower_shift: {
     description:
@@ -43,8 +54,16 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   get_tower_snapshot: {
     description:
-      "Return the current compact, versioned state of the active tower Shift.",
-    inputSchema: strictObjectSchema(),
+      "Read selected sections of current authoritative Shift state. Omit sections for all sections; compact detail is the default.",
+    inputSchema: strictObjectSchema({
+      sections: {
+        type: "array",
+        items: { type: "string", enum: [...TOWER_SNAPSHOT_SECTIONS] },
+        minItems: 1,
+        uniqueItems: true,
+      },
+      detail: { type: "string", enum: [...READ_DETAIL_LEVELS] },
+    }),
     annotations: { readOnlyHint: true },
   },
   wait_for_tower_event: {
@@ -67,8 +86,19 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   get_active_conflicts: {
     description:
-      "Return current and predicted operational conflicts from authoritative Shift state.",
-    inputSchema: strictObjectSchema(),
+      "Read current and predicted conflict facts from authoritative Shift state, optionally narrowed by time scope and detail. This tool does not recommend a resolution.",
+    inputSchema: strictObjectSchema({
+      scope: {
+        type: "string",
+        enum: ["all", "current", "predicted"],
+      },
+      detail: { type: "string", enum: [...READ_DETAIL_LEVELS] },
+      lookaheadMs: {
+        type: "integer",
+        minimum: 0,
+        maximum: 600_000,
+      },
+    }),
     annotations: { readOnlyHint: true },
   },
   evaluate_clearance_set: {

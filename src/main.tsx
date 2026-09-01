@@ -38,9 +38,6 @@ function FlowControlPage() {
   const [initialOperatingPosture, setInitialOperatingPosture] =
     useState<"observe" | "assist" | "take-the-sector">("take-the-sector");
   const [startupCopyStatus, setStartupCopyStatus] = useState<string | undefined>();
-  const [selectedAircraftId, setSelectedAircraftId] = useState<string | undefined>(
-    () => snapshot?.aircraft[0]?.id,
-  );
   const [connectionHealth, setConnectionHealth] =
     useState<ConnectionHealth>("healthy");
   const [operationalReceipts, setOperationalReceipts] = useState<
@@ -131,8 +128,17 @@ function FlowControlPage() {
       onArmConfiguredShift={armConfiguredShift}
       onCopyKickoffPrompt={copyKickoffPrompt}
       snapshot={snapshot}
-      selectedAircraftId={selectedAircraftId}
-      onSelectAircraft={setSelectedAircraftId}
+      selectedAircraftId={snapshot?.selectedAircraftId}
+      onSelectAircraft={(aircraftId) => {
+        if (!application) {
+          return;
+        }
+        application.command({
+          type: "select-aircraft",
+          actor: "supervising-controller",
+          aircraftId,
+        });
+      }}
       onApproveRecoveryPlan={() => {
         if (!application || !snapshot?.stagedRecoveryPlan) {
           return;

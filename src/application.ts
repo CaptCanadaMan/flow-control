@@ -512,6 +512,19 @@ type RunwayResources = {
   }>;
 };
 
+export type ActiveConflictScope = "all" | "current" | "predicted";
+
+export type ActiveConflict = {
+  id: string;
+  kind: "runway-separation" | "intersection-separation";
+  status: "current" | "predicted";
+  resourceId: string;
+  aircraftIds: string[];
+  beginsAtSimulationTimeMs: number;
+  endsAtSimulationTimeMs: number;
+  runwayIds: Array<"09-27" | "04-22">;
+};
+
 type Capability =
   | "begin_tower_shift"
   | "get_tower_snapshot"
@@ -576,6 +589,7 @@ type ApplicationState = {
   stagedClearancePlanReference?: string;
   stagedClearancePlan?: ClearancePlan;
   stagedRecoveryPlan?: RecoveryPlan;
+  selectedAircraftId?: string;
   shiftStatus: "armed" | "active";
   simulationTimeMs: number;
   stateVersion: number;
@@ -589,6 +603,7 @@ export type TowerSnapshot = Pick<
   | "controllerScreenName"
   | "operatingPosture"
   | "stateVersion"
+  | "selectedAircraftId"
 > & {
   simulationTimeMs: number;
   weather: StaticVfrWeather;
@@ -605,11 +620,32 @@ export type TowerSnapshot = Pick<
   stagedRecoveryPlan?: RecoveryPlan;
 };
 
+export type TowerSnapshotSection =
+  | "authority"
+  | "weather"
+  | "runways"
+  | "traffic"
+  | "plans"
+  | "transmissions";
+
+export type TowerSnapshotDetail = "compact" | "full";
+
 type Query =
   | { type: "available-capabilities" }
-  | { type: "tower-snapshot" }
+  | {
+      type: "tower-snapshot";
+      sections?: TowerSnapshotSection[];
+      detail?: TowerSnapshotDetail;
+    }
   | { type: "operational-receipts" }
   | { type: "transmissions" }
+  | { type: "selected-context" }
+  | {
+      type: "active-conflicts";
+      scope?: ActiveConflictScope;
+      detail?: TowerSnapshotDetail;
+      lookaheadMs?: number;
+    }
   | {
       type: "evaluate-clearance-set";
       expectedStateVersion: number;
@@ -674,6 +710,12 @@ type SetAgentWaitCommand = {
   type: "set-agent-wait";
   actor: "capability-registry";
   active: boolean;
+};
+
+type SelectAircraftCommand = {
+  type: "select-aircraft";
+  actor: "supervising-controller";
+  aircraftId: string;
 };
 
 type StageClearancePlanCommand = {
@@ -763,6 +805,7 @@ type Command =
   | SetCategoryOverrideCommand
   | RenewAgentLeaseCommand
   | SetAgentWaitCommand
+  | SelectAircraftCommand
   | StageClearancePlanCommand
   | StageRecoveryPlanCommand
   | SetClearancePlanMemberSelectionCommand
@@ -1016,6 +1059,114 @@ function runwayResourcesAt(
     },
   );
   return { runwayOccupancy, intersectionOccupancy };
+}
+
+function activeConflictsAt(
+  state: ApplicationState,
+  {
+    scope = "all",
+    detail = "compact",
+    lookaheadMs = 120_000,
+  }: {
+    scope?: ActiveConflictScope;
+    detail?: TowerSnapshotDetail;
+    lookaheadMs?: number;
+  } = {},
+) {
+  const scheduledRunwayUses = INITIAL_AIRCRAFT_LIFECYCLES.flatMap(
+    ({ aircraft, runwayUse }) =>
+      runwayUse ? [{ aircraftId: aircraft.id, ...runwayUse }] : [],
+  );
+  const conflicts: ActiveConflict[] = [];
+
+  for (let firstIndex = 0; firstIndex < scheduledRunwayUses.length; firstIndex += 1) {
+    const first = scheduledRunwayUses[firstIndex];
+    for (
+      let secondIndex = firstIndex + 1;
+      secondIndex < scheduledRunwayUses.length;
+      secondIndex += 1
+    ) {
+      const second = scheduledRunwayUses[secondIndex];
+      const beginsAtSimulationTimeMs = Math.max(
+        first.beginsAtMs,
+        second.beginsAtMs,
+      );
+      const endsAtSimulationTimeMs = Math.min(
+        first.clearsAtMs,
+        second.clearsAtMs,
+      );
+      if (beginsAtSimulationTimeMs >= endsAtSimulationTimeMs) {
+        continue;
+      }
+
+      const sharedIntersection = state.airport.intersections.find(
+        ({ runwayIds }) =>
+          first.runwayId !== second.runwayId &&
+          runwayIds.includes(first.runwayId) &&
+          runwayIds.includes(second.runwayId),
+      );
+      if (first.runwayId !== second.runwayId && !sharedIntersection) {
+        continue;
+      }
+
+      const status =
+        beginsAtSimulationTimeMs <= state.simulationTimeMs &&
+        state.simulationTimeMs < endsAtSimulationTimeMs
+          ? "current"
+          : beginsAtSimulationTimeMs > state.simulationTimeMs &&
+              beginsAtSimulationTimeMs <= state.simulationTimeMs + lookaheadMs
+            ? "predicted"
+            : undefined;
+      if (!status) {
+        continue;
+      }
+
+      const aircraftIds = [first.aircraftId, second.aircraftId].sort();
+      const runwayIds = [first.runwayId, second.runwayId].filter(
+        (runwayId, index, all) => all.indexOf(runwayId) === index,
+      );
+      const kind =
+        first.runwayId === second.runwayId
+          ? "runway-separation"
+          : "intersection-separation";
+      const resourceId = sharedIntersection?.id ?? first.runwayId;
+      conflicts.push({
+        id: `${kind}:${resourceId}:${aircraftIds.join(":")}:${beginsAtSimulationTimeMs}`,
+        kind,
+        status,
+        resourceId,
+        aircraftIds,
+        beginsAtSimulationTimeMs,
+        endsAtSimulationTimeMs,
+        runwayIds,
+      });
+    }
+  }
+
+  const project = (conflict: ActiveConflict) =>
+    detail === "full"
+      ? structuredClone(conflict)
+      : {
+          id: conflict.id,
+          kind: conflict.kind,
+          status: conflict.status,
+          resourceId: conflict.resourceId,
+          aircraftIds: [...conflict.aircraftIds],
+          beginsAtSimulationTimeMs: conflict.beginsAtSimulationTimeMs,
+          endsAtSimulationTimeMs: conflict.endsAtSimulationTimeMs,
+        };
+  return {
+    asOfSimulationTimeMs: state.simulationTimeMs,
+    predictionHorizonMs: lookaheadMs,
+    current:
+      scope === "predicted"
+        ? []
+        : conflicts.filter(({ status }) => status === "current").map(project),
+    predicted:
+      scope === "current"
+        ? []
+        : conflicts.filter(({ status }) => status === "predicted").map(project),
+  };
 }
 
 function advanceRunwayResources(state: ApplicationState) {
@@ -1397,6 +1548,99 @@ export function createFlowControlApplication(options: {
       stagedClearancePlanReference: state.stagedClearancePlanReference,
       stagedClearancePlan: structuredClone(state.stagedClearancePlan),
       stagedRecoveryPlan: structuredClone(state.stagedRecoveryPlan),
+      selectedAircraftId: state.selectedAircraftId,
+    };
+  }
+
+  function selectedTowerSnapshot(
+    sections: TowerSnapshotSection[],
+    detail: TowerSnapshotDetail,
+  ) {
+    const snapshot = towerSnapshot();
+    const selected = new Set(sections);
+    return {
+      shiftStatus: snapshot.shiftStatus,
+      scenarioSeed: snapshot.scenarioSeed,
+      stateVersion: snapshot.stateVersion,
+      simulationTimeMs: snapshot.simulationTimeMs,
+      selectedAircraftId: snapshot.selectedAircraftId,
+      ...(selected.has("authority")
+        ? {
+            authority: {
+              operatingPosture: snapshot.operatingPosture,
+              categoryOverrides: snapshot.categoryOverrides,
+              ...(snapshot.pendingOperatingPosture
+                ? { pendingOperatingPosture: snapshot.pendingOperatingPosture }
+                : {}),
+              ...(snapshot.capabilitySynchronization
+                ? {
+                    capabilitySynchronization:
+                      snapshot.capabilitySynchronization,
+                  }
+                : {}),
+              ...(detail === "full" && snapshot.controllerScreenName
+                ? { controllerScreenName: snapshot.controllerScreenName }
+                : {}),
+            },
+          }
+        : {}),
+      ...(selected.has("weather") ? { weather: snapshot.weather } : {}),
+      ...(selected.has("runways")
+        ? {
+            runways: {
+              airport:
+                detail === "full"
+                  ? snapshot.airport
+                  : {
+                      id: snapshot.airport.id,
+                      name: snapshot.airport.name,
+                      runways: snapshot.airport.runways.map(
+                        ({ id, role, runwayEnds }) => ({
+                          id,
+                          role,
+                          runwayEnds: [...runwayEnds],
+                        }),
+                      ),
+                      intersections: snapshot.airport.intersections.map(
+                        ({ id, runwayIds }) => ({
+                          id,
+                          runwayIds: [...runwayIds],
+                        }),
+                      ),
+                    },
+              resources: snapshot.runwayResources,
+            },
+          }
+        : {}),
+      ...(selected.has("traffic")
+        ? {
+            traffic: {
+              aircraft: snapshot.aircraft,
+              ...(detail === "full"
+                ? {
+                    aircraftCapabilityProfiles:
+                      snapshot.aircraftCapabilityProfiles,
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(selected.has("plans")
+        ? {
+            plans: {
+              clearancePlan: snapshot.stagedClearancePlan,
+              recoveryPlan: snapshot.stagedRecoveryPlan,
+            },
+          }
+        : {}),
+      ...(selected.has("transmissions")
+        ? {
+            transmissions:
+              detail === "full"
+                ? snapshot.transmissions
+                : snapshot.transmissions.slice(-5),
+          }
+        : {}),
     };
   }
 
@@ -1449,6 +1693,31 @@ export function createFlowControlApplication(options: {
           summary: command.active
             ? "Tower Agent wait is active."
             : "Tower Agent wait completed.",
+          nextAction: "continue" as const,
+        };
+      }
+
+      if (command.type === "select-aircraft") {
+        const aircraft = state.aircraft.find(
+          ({ id, flightPhase }) =>
+            id === command.aircraftId && flightPhase !== "out-of-play",
+        );
+        if (!aircraft) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `Aircraft ${command.aircraftId} is not available for selection.`,
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
+        state.selectedAircraftId = aircraft.id;
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: `${aircraft.callsign} selected by the Supervising Controller.`,
           nextAction: "continue" as const,
         };
       }
@@ -2501,7 +2770,19 @@ export function createFlowControlApplication(options: {
                 state.categoryOverrides,
               );
         case "tower-snapshot":
-          return towerSnapshot();
+          return query.sections || query.detail
+            ? selectedTowerSnapshot(
+                query.sections ?? [
+                  "authority",
+                  "weather",
+                  "runways",
+                  "traffic",
+                  "plans",
+                  "transmissions",
+                ],
+                query.detail ?? "compact",
+              )
+            : towerSnapshot();
         case "capabilities-to-register":
           return state.capabilitySynchronization === "pending" &&
             state.pendingOperatingPosture
@@ -2519,6 +2800,82 @@ export function createFlowControlApplication(options: {
           return [...state.operationalReceipts];
         case "transmissions":
           return structuredClone(state.transmissions);
+        case "selected-context": {
+          const selectedAircraftId = state.selectedAircraftId;
+          const selectedAircraft = state.aircraft.find(
+            ({ id, flightPhase }) =>
+              id === selectedAircraftId && flightPhase !== "out-of-play",
+          );
+          const activeConflicts = activeConflictsAt(state, { detail: "full" });
+          const relatedConflicts = selectedAircraftId
+            ? [...activeConflicts.current, ...activeConflicts.predicted].filter(
+                ({ aircraftIds }) => aircraftIds.includes(selectedAircraftId),
+              )
+            : [];
+          const relatedPlanMembers = selectedAircraftId
+            ? [
+                ...(
+                  [
+                    ["clearance-plan", state.stagedClearancePlan],
+                    ["recovery-plan", state.stagedRecoveryPlan],
+                  ] as const
+                ).flatMap(([planType, plan]) =>
+                  plan
+                    ? [
+                        ...plan.members
+                          .filter(
+                            ({ aircraftId }) =>
+                              aircraftId === selectedAircraftId,
+                          )
+                          .map((member) => ({
+                            planType,
+                            planReference: plan.reference,
+                            memberType: "runway-clearance" as const,
+                            memberId: member.id,
+                            selected: member.selected,
+                            clearance: structuredClone(member.clearance),
+                          })),
+                        ...plan.tacticalMembers
+                          .filter(
+                            ({ aircraftId }) =>
+                              aircraftId === selectedAircraftId,
+                          )
+                          .map((member) => ({
+                            planType,
+                            planReference: plan.reference,
+                            memberType: "tactical-instruction" as const,
+                            memberId: member.id,
+                            selected: member.selected,
+                            instruction: structuredClone(member.instruction),
+                          })),
+                      ]
+                    : [],
+                ),
+              ]
+            : [];
+          return {
+            selectionStatus: selectedAircraft
+              ? ("selected" as const)
+              : selectedAircraftId
+                ? ("unavailable" as const)
+                : ("none" as const),
+            selectedAircraftId,
+            selectedAircraft: structuredClone(selectedAircraft),
+            relatedConflicts,
+            relatedPlanMembers,
+            recentTransmissions: selectedAircraft
+              ? structuredClone(
+                  state.transmissions
+                    .filter(
+                      ({ aircraftId }) => aircraftId === selectedAircraft.id,
+                    )
+                    .slice(-5),
+                )
+              : [],
+          };
+        }
+        case "active-conflicts":
+          return activeConflictsAt(state, query);
         case "evaluate-clearance-set":
           if (query.expectedStateVersion !== state.stateVersion) {
             return {
