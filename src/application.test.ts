@@ -1600,6 +1600,44 @@ describe("Shift lifecycle", () => {
           receipt.simulationTimeMs >= (rejectionAt ?? Number.POSITIVE_INFINITY),
       ).length,
     ).toBeGreaterThanOrEqual(1);
+
+    // A completed Shift is read-only at both boundaries: capability
+    // discovery collapses to the read surface and cached mutations refuse.
+    const readOnlyCapabilities = [
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+    ];
+    expect(application.query({ type: "available-capabilities" })).toEqual(
+      readOnlyCapabilities,
+    );
+    expect(application.query({ type: "capabilities-to-register" })).toEqual(
+      readOnlyCapabilities,
+    );
+    const cachedMutation = application.command({
+      type: "issue-runway-clearance",
+      actor: "tower-agent",
+      aircraftId: "fc-106",
+      clearance: { kind: "clear-to-land", runwayId: "09-27", runwayEnd: "09" },
+      expectedStateVersion: finalSnapshot.stateVersion,
+    });
+    expect(cachedMutation).toMatchObject({
+      status: "refusal",
+      summary: "The Shift is complete; operational state is read-only.",
+    });
+    expect(
+      application.command({
+        type: "approve-recovery-plan",
+        actor: "supervising-controller",
+        expectedStateVersion: finalSnapshot.stateVersion,
+      }),
+    ).toMatchObject({ status: "refusal" });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .stateVersion,
+    ).toBe(finalSnapshot.stateVersion);
   });
 
   it("replays clearance-gated traffic deterministically from the same Scenario Seed", () => {

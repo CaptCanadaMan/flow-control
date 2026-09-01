@@ -2935,8 +2935,40 @@ export function createFlowControlApplication(options: {
     return { state: connectionState, silenceMs };
   }
 
+  const OPERATIONAL_MUTATION_COMMANDS = new Set<Command["type"]>([
+    "begin-shift",
+    "reduce-operating-posture",
+    "request-operating-posture-increase",
+    "confirm-operating-posture-increase",
+    "set-category-override",
+    "stage-clearance-plan",
+    "stage-recovery-plan",
+    "set-clearance-plan-member-selection",
+    "dispatch-selected-clearance-plan",
+    "select-clearance-plan-alternative",
+    "edit-clearance-plan-tactical-instruction",
+    "approve-recovery-plan",
+    "issue-runway-clearance",
+    "issue-tactical-instruction",
+  ]);
+
   return {
     command(command: Command) {
+      if (
+        (state.shiftStatus === "completed" ||
+          state.shiftStatus === "incomplete") &&
+        OPERATIONAL_MUTATION_COMMANDS.has(command.type)
+      ) {
+        return {
+          status: "refusal" as const,
+          stateVersion: state.stateVersion,
+          summary: "The Shift is complete; operational state is read-only.",
+          rationale:
+            "Completed Shifts accept no further operational mutations; review the Shift Scorecard and export the audit.",
+          nextAction: "get_tower_snapshot" as const,
+        };
+      }
+
       if (command.type === "renew-agent-lease") {
         const now = wallClockNow();
         const wasUnavailable =
@@ -4245,10 +4277,12 @@ export function createFlowControlApplication(options: {
         case "available-capabilities":
           return state.shiftStatus === "armed"
             ? (["begin_tower_shift"] satisfies Capability[])
-            : activeCapabilities(
-                state.operatingPosture,
-                state.categoryOverrides,
-              );
+            : state.shiftStatus !== "active"
+              ? [...OBSERVE_CAPABILITIES]
+              : activeCapabilities(
+                  state.operatingPosture,
+                  state.categoryOverrides,
+                );
         case "tower-snapshot":
           return query.sections || query.detail
             ? selectedTowerSnapshot(
@@ -4264,18 +4298,21 @@ export function createFlowControlApplication(options: {
               )
             : towerSnapshot();
         case "capabilities-to-register":
-          return state.capabilitySynchronization === "pending" &&
-            state.pendingOperatingPosture
-            ? activeCapabilities(
-                state.pendingOperatingPosture,
-                state.categoryOverrides,
-              )
-            : state.shiftStatus === "armed"
-              ? (["begin_tower_shift"] satisfies Capability[])
-              : activeCapabilities(
-                  state.operatingPosture,
+          return state.shiftStatus === "completed" ||
+            state.shiftStatus === "incomplete"
+            ? [...OBSERVE_CAPABILITIES]
+            : state.capabilitySynchronization === "pending" &&
+                state.pendingOperatingPosture
+              ? activeCapabilities(
+                  state.pendingOperatingPosture,
                   state.categoryOverrides,
-                );
+                )
+              : state.shiftStatus === "armed"
+                ? (["begin_tower_shift"] satisfies Capability[])
+                : activeCapabilities(
+                    state.operatingPosture,
+                    state.categoryOverrides,
+                  );
         case "operational-receipts":
           return [...state.operationalReceipts];
         case "transmissions":
