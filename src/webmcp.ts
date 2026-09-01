@@ -56,6 +56,14 @@ type IssueTacticalInstructionInput = Omit<
   Extract<ApplicationCommand, { type: "issue-tactical-instruction" }>,
   "type" | "actor"
 >;
+type StageClearancePlanInput = Omit<
+  Extract<ApplicationCommand, { type: "stage-clearance-plan" }>,
+  "type" | "actor"
+>;
+type StageRecoveryPlanInput = Omit<
+  Extract<ApplicationCommand, { type: "stage-recovery-plan" }>,
+  "type" | "actor"
+>;
 
 function executionSignal(
   context?: AbortSignal | { signal?: AbortSignal },
@@ -98,6 +106,7 @@ function resultEnvelope<T>({
   summary,
   nextAction,
   affectedAircraft: affectedAircraftOverride,
+  expiresAtSimulationTimeMs: expiryOverride,
   data,
 }: {
   application: FlowControlApplication;
@@ -105,6 +114,7 @@ function resultEnvelope<T>({
   summary: string;
   nextAction?: string;
   affectedAircraft?: readonly string[];
+  expiresAtSimulationTimeMs?: number;
   data?: T;
 }): WebMcpResult<T> {
   const snapshot = application.query({
@@ -144,6 +154,8 @@ function resultEnvelope<T>({
       : {}),
     ...(typeof outcome?.expiresAtSimulationTimeMs === "number"
       ? { expiresAtSimulationTimeMs: outcome.expiresAtSimulationTimeMs }
+      : typeof expiryOverride === "number"
+        ? { expiresAtSimulationTimeMs: expiryOverride }
       : {}),
     ...(typeof outcome?.nextAction === "string"
       ? { nextAction: outcome.nextAction }
@@ -445,20 +457,83 @@ export async function connectWebMcp({
         ...contract,
         execute(input) {
           renewAgentLease();
-          const { planReference, expectedStateVersion } = input as {
-            planReference: string;
-            expectedStateVersion: number;
-          };
+          const {
+            planReference,
+            runwayClearances,
+            tacticalInstructions,
+            expectedStateVersion,
+          } = input as StageClearancePlanInput;
           const result = application.command({
             type: "stage-clearance-plan",
             actor: "tower-agent",
             planReference,
+            runwayClearances,
+            tacticalInstructions,
             expectedStateVersion,
           });
+          const affectedAircraft = [
+            ...new Set([
+              ...(runwayClearances ?? []).map(({ aircraftId }) => aircraftId),
+              ...(tacticalInstructions ?? []).map(
+                ({ aircraftId }) => aircraftId,
+              ),
+            ]),
+          ];
+          const snapshot = application.query({
+            type: "tower-snapshot",
+          }) as TowerSnapshot;
+          const stagedPlan =
+            result.status === "success" &&
+            snapshot.stagedClearancePlan?.reference === planReference
+              ? snapshot.stagedClearancePlan
+              : undefined;
           return resultEnvelope({
             application,
             outcome: result,
             summary: "Clearance Plan staging processed.",
+            affectedAircraft,
+            expiresAtSimulationTimeMs:
+              stagedPlan?.expiresAtSimulationTimeMs,
+            data: stagedPlan,
+          });
+        },
+      };
+    }
+
+    if (capability === "stage_recovery_plan") {
+      return {
+        name: capability,
+        ...contract,
+        execute(input) {
+          renewAgentLease();
+          const { planReference, runwayClearances, expectedStateVersion } =
+            input as StageRecoveryPlanInput;
+          const result = application.command({
+            type: "stage-recovery-plan",
+            actor: "tower-agent",
+            planReference,
+            runwayClearances,
+            expectedStateVersion,
+          });
+          const affectedAircraft = [
+            ...new Set(runwayClearances.map(({ aircraftId }) => aircraftId)),
+          ];
+          const snapshot = application.query({
+            type: "tower-snapshot",
+          }) as TowerSnapshot;
+          const stagedPlan =
+            result.status === "approval-required" &&
+            snapshot.stagedRecoveryPlan?.reference === planReference
+              ? snapshot.stagedRecoveryPlan
+              : undefined;
+          return resultEnvelope({
+            application,
+            outcome: result,
+            summary: "Recovery Plan staging processed.",
+            affectedAircraft,
+            expiresAtSimulationTimeMs:
+              stagedPlan?.expiresAtSimulationTimeMs,
+            data: stagedPlan,
           });
         },
       };

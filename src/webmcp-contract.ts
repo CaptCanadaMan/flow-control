@@ -101,6 +101,19 @@ const CANDIDATE_RUNWAY_CLEARANCE_SCHEMA = strictObjectSchema(
   ["aircraftId", "clearance"],
 );
 
+const PLAN_RUNWAY_CLEARANCE_SCHEMA = strictObjectSchema(
+  {
+    aircraftId: { type: "string", minLength: 1 },
+    clearance: RUNWAY_CLEARANCE_SCHEMA,
+    alternatives: {
+      type: "array",
+      minItems: 1,
+      items: RUNWAY_CLEARANCE_SCHEMA,
+    },
+  },
+  ["aircraftId", "clearance"],
+);
+
 const TACTICAL_INSTRUCTION_PROPERTIES = [
   "headingDegrees",
   "altitudeFeet",
@@ -169,6 +182,36 @@ const TACTICAL_INSTRUCTION_SCHEMA = strictObjectSchema({
 TACTICAL_INSTRUCTION_SCHEMA.anyOf = TACTICAL_INSTRUCTION_PROPERTIES.map(
   (property) => ({ required: [property] }),
 );
+
+const CANDIDATE_TACTICAL_INSTRUCTION_SCHEMA = strictObjectSchema(
+  {
+    aircraftId: { type: "string", minLength: 1 },
+    instruction: TACTICAL_INSTRUCTION_SCHEMA,
+  },
+  ["aircraftId", "instruction"],
+);
+
+const STAGE_CLEARANCE_PLAN_SCHEMA = strictObjectSchema(
+  {
+    planReference: { type: "string", minLength: 1 },
+    runwayClearances: {
+      type: "array",
+      minItems: 1,
+      items: PLAN_RUNWAY_CLEARANCE_SCHEMA,
+    },
+    tacticalInstructions: {
+      type: "array",
+      minItems: 1,
+      items: CANDIDATE_TACTICAL_INSTRUCTION_SCHEMA,
+    },
+    expectedStateVersion: { type: "integer", minimum: 0 },
+  },
+  ["planReference", "expectedStateVersion"],
+);
+STAGE_CLEARANCE_PLAN_SCHEMA.anyOf = [
+  { required: ["runwayClearances"] },
+  { required: ["tacticalInstructions"] },
+];
 
 export const WEBMCP_TOOL_CONTRACTS = {
   begin_tower_shift: {
@@ -248,20 +291,25 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   stage_clearance_plan: {
     description:
-      "Stage a reversible Clearance Plan for Supervising Controller review when active authority permits it.",
-    inputSchema: strictObjectSchema(
-      {
-        planReference: { type: "string", minLength: 1 },
-        expectedStateVersion: { type: "integer", minimum: 0 },
-      },
-      ["planReference", "expectedStateVersion"],
-    ),
+      "Stage a reversible ordinary or elevated Clearance Plan for Supervising Controller review without dispatching it. Requires Assist or Take the Sector and the current State Version; include one or more runway Clearances or Tactical Instructions, with selective runway alternatives where useful.",
+    inputSchema: STAGE_CLEARANCE_PLAN_SCHEMA,
     annotations: { readOnlyHint: false },
   },
   stage_recovery_plan: {
     description:
-      "Stage an Exceptional Recovery Plan for explicit Supervising Controller review.",
-    inputSchema: strictObjectSchema(),
+      "Stage an Exceptional Recovery Plan for explicit Supervising Controller approval without dispatching it. Requires Assist or Take the Sector, the current State Version, and a clearance set classified as Exceptional Recovery.",
+    inputSchema: strictObjectSchema(
+      {
+        planReference: { type: "string", minLength: 1 },
+        runwayClearances: {
+          type: "array",
+          minItems: 1,
+          items: PLAN_RUNWAY_CLEARANCE_SCHEMA,
+        },
+        expectedStateVersion: { type: "integer", minimum: 0 },
+      },
+      ["planReference", "runwayClearances", "expectedStateVersion"],
+    ),
     annotations: { readOnlyHint: false },
   },
   issue_runway_clearance: {

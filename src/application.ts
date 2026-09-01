@@ -827,6 +827,12 @@ function staleCommandSummary(commandType: Command["type"]) {
   if (commandType === "issue-tactical-instruction") {
     return "Tactical Instruction refused because the expected State Version is stale.";
   }
+  if (commandType === "stage-clearance-plan") {
+    return "Clearance Plan staging refused because the expected State Version is stale.";
+  }
+  if (commandType === "stage-recovery-plan") {
+    return "Recovery Plan staging refused because the expected State Version is stale.";
+  }
   return "Shift start refused because the expected State Version is stale.";
 }
 
@@ -2075,7 +2081,11 @@ export function createFlowControlApplication(options: {
         if (
           !evaluation.valid ||
           tacticalInstructions.some(
-            ({ instruction }) => !isValidPlanTacticalInstruction(instruction),
+            ({ aircraftId, instruction }) =>
+              !state.aircraft.some(
+                ({ id, flightPhase }) =>
+                  id === aircraftId && flightPhase !== "out-of-play",
+              ) || !isValidPlanTacticalInstruction(instruction),
           )
         ) {
           return {
