@@ -47,6 +47,16 @@ type CandidateRunwayClearanceInput = {
   };
 };
 
+type ApplicationCommand = Parameters<FlowControlApplication["command"]>[0];
+type IssueRunwayClearanceInput = Omit<
+  Extract<ApplicationCommand, { type: "issue-runway-clearance" }>,
+  "type" | "actor"
+>;
+type IssueTacticalInstructionInput = Omit<
+  Extract<ApplicationCommand, { type: "issue-tactical-instruction" }>,
+  "type" | "actor"
+>;
+
 function executionSignal(
   context?: AbortSignal | { signal?: AbortSignal },
 ) {
@@ -87,12 +97,14 @@ function resultEnvelope<T>({
   outcome,
   summary,
   nextAction,
+  affectedAircraft: affectedAircraftOverride,
   data,
 }: {
   application: FlowControlApplication;
   outcome?: Record<string, unknown>;
   summary: string;
   nextAction?: string;
+  affectedAircraft?: readonly string[];
   data?: T;
 }): WebMcpResult<T> {
   const snapshot = application.query({
@@ -107,7 +119,9 @@ function resultEnvelope<T>({
     ? outcome.affectedAircraft.filter(
         (aircraftId): aircraftId is string => typeof aircraftId === "string",
       )
-    : [];
+    : affectedAircraftOverride
+      ? [...affectedAircraftOverride]
+      : [];
   const simulationTimeMs =
     typeof outcome?.simulationTimeMs === "number"
       ? outcome.simulationTimeMs
@@ -337,13 +351,11 @@ export async function connectWebMcp({
           };
           return resultEnvelope({
             application,
-            outcome: {
-              affectedAircraft: selectedContext.selectedAircraftId
-                ? [selectedContext.selectedAircraftId]
-                : [],
-            },
             summary: "Supervising Controller selection returned.",
             nextAction: "continue",
+            affectedAircraft: selectedContext.selectedAircraftId
+              ? [selectedContext.selectedAircraftId]
+              : [],
             data: selectedContext,
           });
         },
@@ -382,12 +394,12 @@ export async function connectWebMcp({
           ];
           return resultEnvelope({
             application,
-            outcome: { affectedAircraft },
             summary:
               allConflicts.length === 0
                 ? "No current or predicted operational conflicts."
                 : `${conflicts.current.length} current and ${conflicts.predicted.length} predicted operational conflicts returned.`,
             nextAction: "wait_for_tower_event",
+            affectedAircraft,
             data: conflicts,
           });
         },
@@ -447,6 +459,56 @@ export async function connectWebMcp({
             application,
             outcome: result,
             summary: "Clearance Plan staging processed.",
+          });
+        },
+      };
+    }
+
+    if (capability === "issue_runway_clearance") {
+      return {
+        name: capability,
+        ...contract,
+        execute(input) {
+          renewAgentLease();
+          const { aircraftId, clearance, expectedStateVersion } =
+            input as IssueRunwayClearanceInput;
+          const result = application.command({
+            type: "issue-runway-clearance",
+            actor: "tower-agent",
+            aircraftId,
+            clearance,
+            expectedStateVersion,
+          });
+          return resultEnvelope({
+            application,
+            outcome: result,
+            summary: "Runway Clearance dispatch processed.",
+            affectedAircraft: [aircraftId],
+          });
+        },
+      };
+    }
+
+    if (capability === "issue_tactical_instruction") {
+      return {
+        name: capability,
+        ...contract,
+        execute(input) {
+          renewAgentLease();
+          const { aircraftId, instruction, expectedStateVersion } =
+            input as IssueTacticalInstructionInput;
+          const result = application.command({
+            type: "issue-tactical-instruction",
+            actor: "tower-agent",
+            aircraftId,
+            instruction,
+            expectedStateVersion,
+          });
+          return resultEnvelope({
+            application,
+            outcome: result,
+            summary: "Tactical Instruction dispatch processed.",
+            affectedAircraft: [aircraftId],
           });
         },
       };

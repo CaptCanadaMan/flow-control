@@ -817,6 +817,19 @@ type Command =
   | IssueTacticalInstructionCommand
   | AdvanceSimulationCommand;
 
+function staleCommandSummary(commandType: Command["type"]) {
+  if (commandType === "dispatch-selected-clearance-plan") {
+    return "Clearance Plan dispatch refused because the expected State Version is stale.";
+  }
+  if (commandType === "issue-runway-clearance") {
+    return "Runway Clearance refused because the expected State Version is stale.";
+  }
+  if (commandType === "issue-tactical-instruction") {
+    return "Tactical Instruction refused because the expected State Version is stale.";
+  }
+  return "Shift start refused because the expected State Version is stale.";
+}
+
 const OBSERVE_CAPABILITIES: Capability[] = [
   "get_tower_snapshot",
   "wait_for_tower_event",
@@ -1079,7 +1092,11 @@ function activeConflictsAt(
   );
   const conflicts: ActiveConflict[] = [];
 
-  for (let firstIndex = 0; firstIndex < scheduledRunwayUses.length; firstIndex += 1) {
+  for (
+    let firstIndex = 0;
+    firstIndex < scheduledRunwayUses.length;
+    firstIndex += 1
+  ) {
     const first = scheduledRunwayUses[firstIndex];
     for (
       let secondIndex = firstIndex + 1;
@@ -1806,10 +1823,7 @@ export function createFlowControlApplication(options: {
         return {
           status: "stale" as const,
           stateVersion: state.stateVersion,
-          summary:
-            command.type === "dispatch-selected-clearance-plan"
-              ? "Clearance Plan dispatch refused because the expected State Version is stale."
-              : "Shift start refused because the expected State Version is stale.",
+          summary: staleCommandSummary(command.type),
           rationale: `Expected State Version ${command.expectedStateVersion}; current State Version is ${state.stateVersion}.`,
           nextAction: "get_tower_snapshot" as const,
         };

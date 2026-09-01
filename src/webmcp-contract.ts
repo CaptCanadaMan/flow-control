@@ -101,6 +101,75 @@ const CANDIDATE_RUNWAY_CLEARANCE_SCHEMA = strictObjectSchema(
   ["aircraftId", "clearance"],
 );
 
+const TACTICAL_INSTRUCTION_PROPERTIES = [
+  "headingDegrees",
+  "altitudeFeet",
+  "speedKnots",
+  "circuit",
+  "sequenceBehindAircraftId",
+  "extendCircuitLeg",
+  "localHoldId",
+  "orbitDirection",
+] as const;
+
+const TACTICAL_INSTRUCTION_SCHEMA = strictObjectSchema({
+  headingDegrees: {
+    type: "integer",
+    minimum: 1,
+    maximum: 360,
+    description: "Assigned magnetic heading in whole degrees.",
+  },
+  altitudeFeet: {
+    type: "integer",
+    minimum: 1,
+    description: "Assigned altitude in whole feet.",
+  },
+  speedKnots: {
+    type: "integer",
+    minimum: 1,
+    description: "Assigned speed in whole knots.",
+  },
+  circuit: strictObjectSchema(
+    {
+      action: {
+        type: "string",
+        enum: ["enter", "adjust"],
+        description: "Whether to enter or adjust the named circuit.",
+      },
+      circuitId: {
+        type: "string",
+        enum: ["runway-09-left"],
+        description: "The named circuit in the current airport model.",
+      },
+    },
+    ["action", "circuitId"],
+  ),
+  sequenceBehindAircraftId: {
+    type: "string",
+    minLength: 1,
+    description: "The active aircraft to follow in sequence.",
+  },
+  extendCircuitLeg: {
+    type: "string",
+    enum: ["upwind", "crosswind", "downwind", "base"],
+    description: "The circuit leg to extend.",
+  },
+  localHoldId: {
+    type: "string",
+    enum: ["northwest-hold", "southeast-hold"],
+    description: "The named local holding area to use.",
+  },
+  orbitDirection: {
+    type: "string",
+    enum: ["left", "right"],
+    description: "The direction of one 360-degree orbit.",
+  },
+});
+
+TACTICAL_INSTRUCTION_SCHEMA.anyOf = TACTICAL_INSTRUCTION_PROPERTIES.map(
+  (property) => ({ required: [property] }),
+);
+
 export const WEBMCP_TOOL_CONTRACTS = {
   begin_tower_shift: {
     description:
@@ -197,14 +266,46 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   issue_runway_clearance: {
     description:
-      "Issue one policy-validated runway Clearance within current delegated authority.",
-    inputSchema: strictObjectSchema(),
+      "Dispatch one runway Clearance as the Tower Agent. Requires Take the Sector authority and the current State Version; policy revalidates authority, aircraft capability, runway occupancy, intersections, and other Hard Safety Invariants. Returns the canonical operational result envelope.",
+    inputSchema: strictObjectSchema(
+      {
+        aircraftId: {
+          type: "string",
+          minLength: 1,
+          description: "The active aircraft receiving the Clearance.",
+        },
+        clearance: RUNWAY_CLEARANCE_SCHEMA,
+        expectedStateVersion: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "The authoritative State Version used to choose this Clearance.",
+        },
+      },
+      ["aircraftId", "clearance", "expectedStateVersion"],
+    ),
     annotations: { readOnlyHint: false },
   },
   issue_tactical_instruction: {
     description:
-      "Issue one policy-validated compound Tactical Instruction within current delegated authority.",
-    inputSchema: strictObjectSchema(),
+      "Dispatch one compound Tactical Instruction as the Tower Agent. Requires Take the Sector authority and the current State Version; compatible heading, altitude, speed, circuit, sequence, extension, hold, and orbit components may be combined, and Policy Security revalidates operational compatibility. Returns the canonical operational result envelope.",
+    inputSchema: strictObjectSchema(
+      {
+        aircraftId: {
+          type: "string",
+          minLength: 1,
+          description: "The active aircraft receiving the instruction.",
+        },
+        instruction: TACTICAL_INSTRUCTION_SCHEMA,
+        expectedStateVersion: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "The authoritative State Version used to choose this instruction.",
+        },
+      },
+      ["aircraftId", "instruction", "expectedStateVersion"],
+    ),
     annotations: { readOnlyHint: false },
   },
 } as const;
