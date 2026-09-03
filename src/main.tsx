@@ -294,29 +294,29 @@ function FlowControlPage() {
       capabilitySynchronization={snapshot?.capabilitySynchronization}
       connectionHealth={connectionHealth}
       stagedClearancePlanReference={snapshot?.stagedClearancePlanReference}
-      onReduceToObserve={() => {
+      onReduceOperatingPosture={(operatingPosture) => {
         if (!application || !snapshot) {
           return;
         }
         application.command({
           type: "reduce-operating-posture",
           actor: "supervising-controller",
-          operatingPosture: "observe",
+          operatingPosture,
           expectedStateVersion: snapshot.stateVersion,
         });
       }}
-      onRequestTakeTheSector={() => {
+      onRequestOperatingPostureIncrease={(operatingPosture) => {
         if (!application || !snapshot) {
           return;
         }
         application.command({
           type: "request-operating-posture-increase",
           actor: "supervising-controller",
-          operatingPosture: "take-the-sector",
+          operatingPosture,
           expectedStateVersion: snapshot.stateVersion,
         });
       }}
-      onConfirmTakeTheSector={() => {
+      onConfirmOperatingPostureIncrease={() => {
         if (!application || !snapshot) {
           return;
         }

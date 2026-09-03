@@ -245,6 +245,181 @@ describe("WebMCP capability lifecycle", () => {
     ]);
   });
 
+  it("revokes only dispatch capabilities after a human reduction from Take the Sector to Assist", async () => {
+    const registeredTools: Array<{
+      name: string;
+      execute: (input: unknown) => unknown;
+      signal: AbortSignal;
+    }> = [];
+    const modelContext = {
+      async registerTool(
+        tool: { name: string; execute: (input: unknown) => unknown },
+        options: { signal: AbortSignal },
+      ) {
+        registeredTools.push({ ...tool, signal: options.signal });
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "take-the-sector",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools[0].execute({ expectedStateVersion: 0 });
+    const takeTheSectorRegistrations = registeredTools.filter(
+      ({ signal }) => !signal.aborted,
+    );
+
+    application.command({
+      type: "reduce-operating-posture",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        registeredTools
+          .filter(({ signal }) => !signal.aborted)
+          .map(({ name }) => name),
+      ).toEqual([
+        "get_tower_snapshot",
+        "wait_for_tower_event",
+        "get_selected_context",
+        "get_active_conflicts",
+        "evaluate_clearance_set",
+        "stage_clearance_plan",
+        "stage_recovery_plan",
+      ]);
+    });
+    // Every handle the host discovered under Take the Sector is revoked, so a
+    // cached issue_* handle can no longer execute after the reduction.
+    expect(
+      takeTheSectorRegistrations.every(({ signal }) => signal.aborted),
+    ).toBe(true);
+  });
+
+  it("registers only dispatch capabilities after a confirmed Assist to Take the Sector grant", async () => {
+    const registeredTools: Array<{
+      name: string;
+      execute: (input: unknown) => unknown;
+      signal: AbortSignal;
+    }> = [];
+    const modelContext = {
+      async registerTool(
+        tool: { name: string; execute: (input: unknown) => unknown },
+        options: { signal: AbortSignal },
+      ) {
+        registeredTools.push({ ...tool, signal: options.signal });
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "assist",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools[0].execute({ expectedStateVersion: 0 });
+    const assistRegistrations = registeredTools.filter(
+      ({ signal }) => !signal.aborted,
+    );
+    expect(assistRegistrations.map(({ name }) => name)).toHaveLength(7);
+
+    application.command({
+      type: "request-operating-posture-increase",
+      actor: "supervising-controller",
+      operatingPosture: "take-the-sector",
+      expectedStateVersion: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A pending request expands nothing until the human confirms it.
+    expect(registeredTools.filter(({ signal }) => !signal.aborted)).toHaveLength(7);
+
+    application.command({
+      type: "confirm-operating-posture-increase",
+      actor: "supervising-controller",
+      expectedStateVersion: 2,
+    });
+
+    await vi.waitFor(() => {
+      expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+        operatingPosture: "take-the-sector",
+        capabilitySynchronization: undefined,
+        stateVersion: 4,
+      });
+    });
+    expect(
+      registeredTools
+        .filter(({ signal }) => !signal.aborted)
+        .map(({ name }) => name),
+    ).toEqual([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+      "stage_clearance_plan",
+      "stage_recovery_plan",
+      "issue_runway_clearance",
+      "issue_tactical_instruction",
+    ]);
+    // The expansion kept the Assist handles live rather than re-registering them.
+    expect(assistRegistrations.every(({ signal }) => !signal.aborted)).toBe(true);
+  });
+
+  it("registers staging capabilities after a confirmed Observe to Assist grant", async () => {
+    const registeredTools: Array<{
+      name: string;
+      execute: (input: unknown) => unknown;
+      signal: AbortSignal;
+    }> = [];
+    const modelContext = {
+      async registerTool(
+        tool: { name: string; execute: (input: unknown) => unknown },
+        options: { signal: AbortSignal },
+      ) {
+        registeredTools.push({ ...tool, signal: options.signal });
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools[0].execute({ expectedStateVersion: 0 });
+
+    application.command({
+      type: "request-operating-posture-increase",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+    application.command({
+      type: "confirm-operating-posture-increase",
+      actor: "supervising-controller",
+      expectedStateVersion: 2,
+    });
+
+    await vi.waitFor(() => {
+      expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+        operatingPosture: "assist",
+        capabilitySynchronization: undefined,
+        stateVersion: 4,
+      });
+    });
+    expect(
+      registeredTools
+        .filter(({ signal }) => !signal.aborted)
+        .map(({ name }) => name),
+    ).toEqual([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+      "stage_clearance_plan",
+      "stage_recovery_plan",
+    ]);
+  });
+
   it("renews the Tower Agent connection lease when a tool is used", async () => {
     let wallClockTime = 0;
     const registeredTools = new Map<

@@ -211,6 +211,9 @@
 }
 
 .authority-strip__action {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-left: auto;
 }
 

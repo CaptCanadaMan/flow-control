@@ -3398,6 +3398,274 @@ describe("Shift lifecycle", () => {
     ).toHaveLength(9);
   });
 
+  it("immediately reduces Take the Sector to Assist, withdrawing only dispatch capability", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "take-the-sector",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const result = application.command({
+      type: "reduce-operating-posture",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+
+    expect(result).toMatchObject({
+      status: "success",
+      stateVersion: 2,
+      summary: "Operating Posture reduced to Assist.",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "assist",
+      pendingOperatingPosture: undefined,
+      capabilitySynchronization: undefined,
+      stateVersion: 2,
+    });
+    expect(application.query({ type: "available-capabilities" })).toEqual([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+      "stage_clearance_plan",
+      "stage_recovery_plan",
+    ]);
+    expect(
+      (application.query({ type: "operational-receipts" }) as unknown[]).at(-1),
+    ).toMatchObject({
+      actor: "supervising-controller",
+      action: "operating-posture-reduced",
+      stateVersionBefore: 1,
+      stateVersionAfter: 2,
+    });
+  });
+
+  it("immediately reduces Assist to Observe", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const result = application.command({
+      type: "reduce-operating-posture",
+      actor: "supervising-controller",
+      operatingPosture: "observe",
+      expectedStateVersion: 1,
+    });
+
+    expect(result).toMatchObject({
+      status: "success",
+      stateVersion: 2,
+      summary: "Operating Posture reduced to Observe.",
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(5);
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "observe",
+      stateVersion: 2,
+    });
+  });
+
+  it("refuses a reduction that would not lower the current posture", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const result = application.command({
+      type: "reduce-operating-posture",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+
+    expect(result).toMatchObject({
+      status: "refusal",
+      stateVersion: 1,
+      summary: "Operating Posture reduction to Assist refused.",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "observe",
+      stateVersion: 1,
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(5);
+  });
+
+  it("requires explicit confirmation before Assist is delegated from Observe", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const requested = application.command({
+      type: "request-operating-posture-increase",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+
+    expect(requested).toMatchObject({
+      status: "approval-required",
+      stateVersion: 2,
+      summary: "Assist grant is pending human confirmation.",
+      nextAction: "confirm-operating-posture-increase",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "observe",
+      pendingOperatingPosture: "assist",
+      capabilitySynchronization: "awaiting-confirmation",
+      stateVersion: 2,
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(5);
+
+    const confirmed = application.command({
+      type: "confirm-operating-posture-increase",
+      actor: "supervising-controller",
+      expectedStateVersion: 2,
+    });
+
+    expect(confirmed).toMatchObject({
+      status: "success",
+      stateVersion: 3,
+      summary: "Assist grant confirmed; capability synchronization is pending.",
+      nextAction: "synchronize-capabilities",
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(5);
+    expect(application.query({ type: "capabilities-to-register" })).toEqual([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+      "stage_clearance_plan",
+      "stage_recovery_plan",
+    ]);
+
+    const synchronized = application.command({
+      type: "complete-capability-synchronization",
+      actor: "capability-registry",
+      expectedStateVersion: 3,
+    });
+
+    expect(synchronized).toMatchObject({
+      status: "success",
+      stateVersion: 4,
+      summary: "Assist capability synchronization completed.",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "assist",
+      pendingOperatingPosture: undefined,
+      capabilitySynchronization: undefined,
+      stateVersion: 4,
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(7);
+  });
+
+  it("requires explicit confirmation before Assist is raised to Take the Sector", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "assist",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const requested = application.command({
+      type: "request-operating-posture-increase",
+      actor: "supervising-controller",
+      operatingPosture: "take-the-sector",
+      expectedStateVersion: 1,
+    });
+
+    expect(requested).toMatchObject({
+      status: "approval-required",
+      stateVersion: 2,
+      summary: "Take the Sector grant is pending human confirmation.",
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(7);
+    expect(application.query({ type: "capabilities-to-register" })).toHaveLength(7);
+
+    application.command({
+      type: "confirm-operating-posture-increase",
+      actor: "supervising-controller",
+      expectedStateVersion: 2,
+    });
+
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "assist",
+      pendingOperatingPosture: "take-the-sector",
+      capabilitySynchronization: "pending",
+      stateVersion: 3,
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(7);
+    expect(application.query({ type: "capabilities-to-register" })).toHaveLength(9);
+
+    application.command({
+      type: "complete-capability-synchronization",
+      actor: "capability-registry",
+      expectedStateVersion: 3,
+    });
+
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "take-the-sector",
+      stateVersion: 4,
+    });
+    expect(application.query({ type: "available-capabilities" })).toHaveLength(9);
+  });
+
+  it("refuses an increase request that would not raise the current posture", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "take-the-sector",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+
+    const result = application.command({
+      type: "request-operating-posture-increase",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+
+    expect(result).toMatchObject({
+      status: "refusal",
+      stateVersion: 1,
+      summary: "Assist grant request refused.",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      operatingPosture: "take-the-sector",
+      pendingOperatingPosture: undefined,
+      capabilitySynchronization: undefined,
+      stateVersion: 1,
+    });
+  });
+
   it("reports warning and unavailable connection states after Tower Agent silence", () => {
     let wallClockTime = 0;
     const application = createFlowControlApplication({

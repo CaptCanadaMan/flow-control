@@ -58,9 +58,9 @@ export function App({
   capabilitySynchronization,
   connectionHealth = "healthy",
   stagedClearancePlanReference,
-  onReduceToObserve,
-  onRequestTakeTheSector,
-  onConfirmTakeTheSector,
+  onReduceOperatingPosture,
+  onRequestOperatingPostureIncrease,
+  onConfirmOperatingPostureIncrease,
 }: {
   webMcpAvailable: boolean;
   screenName?: string;
@@ -114,9 +114,11 @@ export function App({
   capabilitySynchronization?: "awaiting-confirmation" | "pending";
   connectionHealth?: ConnectionHealth;
   stagedClearancePlanReference?: string;
-  onReduceToObserve?: () => void;
-  onRequestTakeTheSector?: () => void;
-  onConfirmTakeTheSector?: () => void;
+  onReduceOperatingPosture?: (operatingPosture: "observe" | "assist") => void;
+  onRequestOperatingPostureIncrease?: (
+    operatingPosture: "assist" | "take-the-sector",
+  ) => void;
+  onConfirmOperatingPostureIncrease?: () => void;
 }) {
   if (!webMcpAvailable) {
     return (
@@ -191,22 +193,51 @@ export function App({
       : capabilitySynchronization === "pending"
         ? "Synchronizing capabilities"
         : undefined;
+  // Every Operating Posture change the Supervising Controller can make from the
+  // current posture. Reductions apply immediately; any increase in delegated
+  // authority is only requested here and takes effect after explicit
+  // confirmation and capability synchronization.
+  const reduceButton = (target: "observe" | "assist") => (
+    <button
+      type="button"
+      key={`reduce-${target}`}
+      onClick={() => onReduceOperatingPosture?.(target)}
+    >
+      Reduce to {POSTURE_LABELS[target]}
+    </button>
+  );
+  const requestButton = (target: "assist" | "take-the-sector") => (
+    <button
+      type="button"
+      key={`request-${target}`}
+      onClick={() => onRequestOperatingPostureIncrease?.(target)}
+    >
+      Request {POSTURE_LABELS[target]}
+    </button>
+  );
   const postureAction =
     shiftStatus !== "active" ? null : capabilitySynchronization ===
       "awaiting-confirmation" ? (
-      <button type="button" onClick={onConfirmTakeTheSector}>
-        Confirm Take the Sector
+      <button type="button" onClick={onConfirmOperatingPostureIncrease}>
+        Confirm {POSTURE_LABELS[pendingOperatingPosture ?? "take-the-sector"]}
       </button>
     ) : capabilitySynchronization === "pending" ? null : operatingPosture ===
       "take-the-sector" ? (
-      <button type="button" onClick={onReduceToObserve}>
-        Reduce to Observe
-      </button>
-    ) : operatingPosture === "observe" ? (
-      <button type="button" onClick={onRequestTakeTheSector}>
-        Request Take the Sector
-      </button>
-    ) : null;
+      <>
+        {reduceButton("assist")}
+        {reduceButton("observe")}
+      </>
+    ) : operatingPosture === "assist" ? (
+      <>
+        {requestButton("take-the-sector")}
+        {reduceButton("observe")}
+      </>
+    ) : (
+      <>
+        {requestButton("assist")}
+        {requestButton("take-the-sector")}
+      </>
+    );
   const shiftEnded = shiftStatus === "completed" || shiftStatus === "incomplete";
 
   return (

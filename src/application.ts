@@ -877,14 +877,14 @@ type BeginShiftCommand = {
 type ReduceOperatingPostureCommand = {
   type: "reduce-operating-posture";
   actor: "supervising-controller";
-  operatingPosture: "observe";
+  operatingPosture: "observe" | "assist";
   expectedStateVersion: number;
 };
 
 type RequestOperatingPostureIncreaseCommand = {
   type: "request-operating-posture-increase";
   actor: "supervising-controller";
-  operatingPosture: "take-the-sector";
+  operatingPosture: "assist" | "take-the-sector";
   expectedStateVersion: number;
 };
 
@@ -1110,6 +1110,14 @@ const POSTURE_LABELS: Record<OperatingPosture, string> = {
   observe: "Observe",
   assist: "Assist",
   "take-the-sector": "Take the Sector",
+};
+
+// Delegated authority is strictly ordered; a reduction may only move down
+// this ladder and an increase request may only move up it.
+const POSTURE_RANK: Record<OperatingPosture, number> = {
+  observe: 0,
+  assist: 1,
+  "take-the-sector": 2,
 };
 
 const VFR_WEATHER_PRESETS: readonly StaticVfrWeather[] = [
@@ -4167,6 +4175,19 @@ export function createFlowControlApplication(options: {
       }
 
       if (command.type === "reduce-operating-posture") {
+        if (
+          POSTURE_RANK[command.operatingPosture] >=
+          POSTURE_RANK[state.operatingPosture]
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `Operating Posture reduction to ${POSTURE_LABELS[command.operatingPosture]} refused.`,
+            rationale: `${POSTURE_LABELS[command.operatingPosture]} does not reduce the current ${POSTURE_LABELS[state.operatingPosture]} posture; an authority increase requires an explicit request and human confirmation.`,
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
         state.operatingPosture = command.operatingPosture;
         const stateVersionBefore = state.stateVersion;
         state.stateVersion += 1;
@@ -4183,12 +4204,25 @@ export function createFlowControlApplication(options: {
         return {
           status: "success" as const,
           stateVersion: state.stateVersion,
-          summary: "Operating Posture reduced to Observe.",
+          summary: `Operating Posture reduced to ${POSTURE_LABELS[command.operatingPosture]}.`,
           nextAction: "wait_for_tower_event" as const,
         };
       }
 
       if (command.type === "request-operating-posture-increase") {
+        if (
+          POSTURE_RANK[command.operatingPosture] <=
+          POSTURE_RANK[state.operatingPosture]
+        ) {
+          return {
+            status: "refusal" as const,
+            stateVersion: state.stateVersion,
+            summary: `${POSTURE_LABELS[command.operatingPosture]} grant request refused.`,
+            rationale: `${POSTURE_LABELS[command.operatingPosture]} does not increase the current ${POSTURE_LABELS[state.operatingPosture]} posture; use reduce-operating-posture to delegate less.`,
+            nextAction: "get_tower_snapshot" as const,
+          };
+        }
+
         state.pendingOperatingPosture = command.operatingPosture;
         state.capabilitySynchronization = "awaiting-confirmation";
         const stateVersionBefore = state.stateVersion;
@@ -4206,12 +4240,14 @@ export function createFlowControlApplication(options: {
         return {
           status: "approval-required" as const,
           stateVersion: state.stateVersion,
-          summary: "Take the Sector grant is pending human confirmation.",
+          summary: `${POSTURE_LABELS[command.operatingPosture]} grant is pending human confirmation.`,
           nextAction: "confirm-operating-posture-increase" as const,
         };
       }
 
       if (command.type === "confirm-operating-posture-increase") {
+        const pendingLabel =
+          POSTURE_LABELS[state.pendingOperatingPosture ?? "take-the-sector"];
         state.capabilitySynchronization = "pending";
         const stateVersionBefore = state.stateVersion;
         state.stateVersion += 1;
@@ -4228,13 +4264,14 @@ export function createFlowControlApplication(options: {
         return {
           status: "success" as const,
           stateVersion: state.stateVersion,
-          summary:
-            "Take the Sector grant confirmed; capability synchronization is pending.",
+          summary: `${pendingLabel} grant confirmed; capability synchronization is pending.`,
           nextAction: "synchronize-capabilities" as const,
         };
       }
 
       if (command.type === "complete-capability-synchronization") {
+        const grantedLabel =
+          POSTURE_LABELS[state.pendingOperatingPosture ?? "take-the-sector"];
         state.operatingPosture = state.pendingOperatingPosture ?? "observe";
         delete state.pendingOperatingPosture;
         delete state.capabilitySynchronization;
@@ -4253,7 +4290,7 @@ export function createFlowControlApplication(options: {
         return {
           status: "success" as const,
           stateVersion: state.stateVersion,
-          summary: "Take the Sector capability synchronization completed.",
+          summary: `${grantedLabel} capability synchronization completed.`,
           nextAction: "wait_for_tower_event" as const,
         };
       }

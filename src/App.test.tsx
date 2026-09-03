@@ -14,6 +14,52 @@ function configuredSnapshot(
   return application.query({ type: "tower-snapshot" }) as TowerSnapshot;
 }
 
+// Minimal React element walker: renders function components so the posture
+// callbacks wired onto the status strip's buttons can be invoked directly
+// without a DOM.
+type RenderedElement = { type: unknown; props: Record<string, any> };
+
+function childrenOf(element: RenderedElement): RenderedElement[] {
+  const rendered =
+    typeof element.type === "function"
+      ? (element.type as (props: unknown) => unknown)(element.props)
+      : element.props.children;
+  const list = Array.isArray(rendered) ? rendered : [rendered];
+  return list
+    .flat(Infinity)
+    .filter(
+      (child): child is RenderedElement =>
+        Boolean(child) && typeof child === "object" && "props" in child,
+    );
+}
+
+function findElement(
+  element: RenderedElement,
+  predicate: (candidate: RenderedElement) => boolean,
+): RenderedElement {
+  if (predicate(element)) {
+    return element;
+  }
+  for (const child of childrenOf(element)) {
+    try {
+      return findElement(child, predicate);
+    } catch {
+      // keep searching siblings
+    }
+  }
+  throw new Error("Element not found.");
+}
+
+function collectElements(
+  element: RenderedElement,
+  predicate: (candidate: RenderedElement) => boolean,
+): RenderedElement[] {
+  return [
+    ...(predicate(element) ? [element] : []),
+    ...childrenOf(element).flatMap((child) => collectElements(child, predicate)),
+  ];
+}
+
 describe("WebMCP preflight", () => {
   it("renders a selected aircraft from the authoritative snapshot in the radar and its contextual panel", () => {
     const application = createFlowControlApplication({
@@ -258,7 +304,7 @@ describe("WebMCP preflight", () => {
     expect(page).not.toContain("Shift armed");
   });
 
-  it("offers immediate reduction while the Tower Agent has Take the Sector authority", () => {
+  it("offers immediate reduction to Assist or Observe while the Tower Agent has Take the Sector authority", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
@@ -266,15 +312,36 @@ describe("WebMCP preflight", () => {
         shiftStatus="active"
         stateVersion={1}
         operatingPosture="take-the-sector"
-        onReduceToObserve={() => undefined}
+        onReduceOperatingPosture={() => undefined}
       />,
     );
 
     expect(page).toContain("Take the Sector");
+    expect(page).toContain("Reduce to Assist");
     expect(page).toContain("Reduce to Observe");
+    expect(page).not.toContain("Request ");
   });
 
-  it("offers an explicit Take the Sector request while active in Observe", () => {
+  it("offers a Take the Sector request or an immediate Observe reduction while active in Assist", () => {
+    const page = renderToStaticMarkup(
+      <App
+        webMcpAvailable
+        snapshot={configuredSnapshot("assist")}
+        shiftStatus="active"
+        stateVersion={2}
+        operatingPosture="assist"
+        onReduceOperatingPosture={() => undefined}
+        onRequestOperatingPostureIncrease={() => undefined}
+      />,
+    );
+
+    expect(page).toContain("Request Take the Sector");
+    expect(page).toContain("Reduce to Observe");
+    expect(page).not.toContain("Reduce to Assist");
+    expect(page).not.toContain("Request Assist");
+  });
+
+  it("offers explicit Assist and Take the Sector requests while active in Observe", () => {
     const page = renderToStaticMarkup(
       <App
         webMcpAvailable
@@ -282,11 +349,42 @@ describe("WebMCP preflight", () => {
         shiftStatus="active"
         stateVersion={2}
         operatingPosture="observe"
-        onRequestTakeTheSector={() => undefined}
+        onRequestOperatingPostureIncrease={() => undefined}
       />,
     );
 
+    expect(page).toContain("Request Assist");
     expect(page).toContain("Request Take the Sector");
+    expect(page).not.toContain("Reduce to ");
+  });
+
+  it("invokes the posture callbacks with the target posture of the pressed control", () => {
+    const reductions: string[] = [];
+    const requests: string[] = [];
+    const element = (
+      <App
+        webMcpAvailable
+        snapshot={configuredSnapshot("assist")}
+        shiftStatus="active"
+        stateVersion={2}
+        operatingPosture="assist"
+        onReduceOperatingPosture={(target) => reductions.push(target)}
+        onRequestOperatingPostureIncrease={(target) => requests.push(target)}
+      />
+    );
+    const strip = findElement(
+      element,
+      (candidate) => candidate.props["aria-label"] === "Authority and connection status",
+    );
+    const buttons = collectElements(
+      strip,
+      (candidate) => candidate.type === "button",
+    );
+
+    buttons.forEach((button) => button.props.onClick());
+
+    expect(reductions).toEqual(["observe"]);
+    expect(requests).toEqual(["take-the-sector"]);
   });
 
   it("requires human confirmation before synchronizing a Take the Sector grant", () => {
@@ -299,13 +397,54 @@ describe("WebMCP preflight", () => {
         operatingPosture="observe"
         pendingOperatingPosture="take-the-sector"
         capabilitySynchronization="awaiting-confirmation"
-        onConfirmTakeTheSector={() => undefined}
+        onConfirmOperatingPostureIncrease={() => undefined}
       />,
     );
 
     expect(page).toContain("Authority grant pending");
     expect(page).toContain("Confirm Take the Sector");
     expect(page).not.toContain("Request Take the Sector");
+    expect(page).not.toContain("Reduce to ");
+  });
+
+  it("requires human confirmation before synchronizing an Assist grant", () => {
+    const page = renderToStaticMarkup(
+      <App
+        webMcpAvailable
+        snapshot={configuredSnapshot()}
+        shiftStatus="active"
+        stateVersion={3}
+        operatingPosture="observe"
+        pendingOperatingPosture="assist"
+        capabilitySynchronization="awaiting-confirmation"
+        onConfirmOperatingPostureIncrease={() => undefined}
+      />,
+    );
+
+    expect(page).toContain("Authority grant pending");
+    expect(page).toContain("Confirm Assist");
+    expect(page).not.toContain("Confirm Take the Sector");
+    expect(page).not.toContain("Request ");
+  });
+
+  it("hides every posture control while capabilities are synchronizing", () => {
+    const page = renderToStaticMarkup(
+      <App
+        webMcpAvailable
+        snapshot={configuredSnapshot("assist")}
+        shiftStatus="active"
+        stateVersion={4}
+        operatingPosture="assist"
+        pendingOperatingPosture="take-the-sector"
+        capabilitySynchronization="pending"
+      />,
+    );
+
+    expect(page).toContain("Synchronizing capabilities");
+    expect(page).toContain("Take the Sector pending capability synchronization");
+    expect(page).not.toContain("Confirm ");
+    expect(page).not.toContain("Request ");
+    expect(page).not.toContain("Reduce to ");
   });
 
   it("shows a delayed-contact warning without declaring the Tower Agent unavailable", () => {
