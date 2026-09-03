@@ -12,6 +12,7 @@ import type { OperationalReceiptRecord } from "./components/AuditPanel";
 import { armShift } from "./shift-lifecycle";
 import { createSimulationTicker } from "./simulation-ticker";
 import { connectWebMcp, type ModelContext } from "./webmcp";
+import { connectStartupWebMcp } from "./webmcp-startup";
 import "./styles.css";
 
 const rootElement = document.getElementById("root");
@@ -58,10 +59,45 @@ function FlowControlPage() {
     OperationalReceiptRecord[]
   >([]);
 
+  // Pre-arm discoverability: describe_tower is the only capability a Tower
+  // Agent can find before a Shift is armed. Arming revokes it before the armed
+  // set is registered. The configuration ref keeps it reading live values.
+  const startupConfiguration = useRef({ screenName, pace, operatingPosture: initialOperatingPosture });
+  startupConfiguration.current = { screenName, pace, operatingPosture: initialOperatingPosture };
+  const startupConnection = useRef<{ revoke(): void } | undefined>(undefined);
+
+  useEffect(() => {
+    if (!modelContext || applicationReference.current) {
+      return;
+    }
+    let cancelled = false;
+    void connectStartupWebMcp({
+      modelContext,
+      configuration: () => startupConfiguration.current,
+    })
+      .then((connection) => {
+        if (cancelled || applicationReference.current) {
+          connection.revoke();
+          return;
+        }
+        startupConnection.current = connection;
+      })
+      .catch((error: unknown) => {
+        console.error("Flow Control could not register its startup WebMCP tool.", error);
+      });
+    return () => {
+      cancelled = true;
+      startupConnection.current?.revoke();
+      startupConnection.current = undefined;
+    };
+  }, []);
+
   const armConfiguredShift = useCallback(() => {
     if (!modelContext || applicationReference.current) {
       return;
     }
+    startupConnection.current?.revoke();
+    startupConnection.current = undefined;
 
     const armedApplication = armShift(
       {
