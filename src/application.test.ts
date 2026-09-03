@@ -3895,3 +3895,208 @@ describe("Shift lifecycle", () => {
     ]);
   });
 });
+
+describe("Tactical Instruction compliance", () => {
+  const ARRIVAL_ID = "fc-202";
+
+  // Signed difference between two headings, so 360 and 0 compare equal.
+  function headingError(actualDegrees: number, expectedDegrees: number) {
+    return ((actualDegrees - expectedDegrees + 540) % 360) - 180;
+  }
+
+  function inboundArrival(scenarioSeed: string) {
+    // The seeded "unable" limitation must not land on the aircraft under test.
+    expect(
+      generateScenario(scenarioSeed).eventDeck.temporaryLimitation.aircraftId,
+    ).not.toBe(ARRIVAL_ID);
+    const application = createFlowControlApplication({
+      scenarioSeed,
+      operatingPosture: "observe",
+      simulation: { fixedTimeStepMs: 100, paceMultiplier: 1 },
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    // fc-202 enters play as an inbound arrival (its pilot switches from
+    // awaiting contact to monitoring); wait for that, then a few seconds more
+    // so it is clear of its entry point.
+    advanceUntil(application, (snapshot) =>
+      snapshot.aircraft.some(
+        ({ id, pilotState }) => id === ARRIVAL_ID && pilotState === "monitoring",
+      ),
+    );
+    advanceSteps(application, 20);
+    const progress = generateScenario(scenarioSeed).aircraftProgress[ARRIVAL_ID];
+    return { application, progress };
+  }
+
+  function arrival(application: FlowControlApplication) {
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    const aircraft = snapshot.aircraft.find(({ id }) => id === ARRIVAL_ID);
+    if (!aircraft) {
+      throw new Error("fc-202 missing from the snapshot.");
+    }
+    return aircraft;
+  }
+
+  function issueInstruction(
+    application: FlowControlApplication,
+    instruction: { headingDegrees?: number; altitudeFeet?: number; speedKnots?: number },
+  ) {
+    const snapshot = application.query({ type: "tower-snapshot" }) as TowerSnapshot;
+    return application.command({
+      type: "issue-tactical-instruction",
+      actor: "supervising-controller",
+      aircraftId: ARRIVAL_ID,
+      instruction,
+      expectedStateVersion: snapshot.stateVersion,
+    });
+  }
+
+  function awaitReadback(application: FlowControlApplication) {
+    advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === ARRIVAL_ID)?.pilotState ===
+        "operating",
+      600,
+    );
+  }
+
+  it("flies a read-back heading as a vector off the approach, dropping any landing clearance", () => {
+    const { application, progress } = inboundArrival("tactical-d");
+    issueManualRunwayClearance(application, ARRIVAL_ID, {
+      kind: "clear-to-land",
+      runwayId: progress.runwayId,
+      runwayEnd: progress.runwayEnd,
+    });
+    awaitReadback(application);
+    expect(arrival(application).activeRunwayClearance?.kind).toBe("clear-to-land");
+    const beforeVector = arrival(application);
+
+    const result = issueInstruction(application, { headingDegrees: 360, altitudeFeet: 4_000 });
+    expect(result).toMatchObject({ status: "success" });
+    // Until the pilot reads back, the aircraft keeps flying its approach path.
+    expect(arrival(application).pilotState).toBe("awaiting-readback");
+    awaitReadback(application);
+    advanceSteps(application, 100);
+
+    const vectored = arrival(application);
+    expect(headingError(vectored.headingDegrees, 360)).toBeCloseTo(0, 3);
+    expect(headingError(vectored.trackDegrees, 360)).toBeCloseTo(0, 3);
+    expect(vectored.position.northNauticalMiles).toBeGreaterThan(
+      beforeVector.position.northNauticalMiles + 0.3,
+    );
+    expect(vectored.altitudeFeet).toBeGreaterThan(beforeVector.altitudeFeet);
+    expect(vectored.altitudeFeet).toBeLessThanOrEqual(4_000);
+    expect(vectored.flightPhase).toBe("inbound");
+    expect(vectored.activeRunwayClearance).toBeUndefined();
+    expect(vectored.activeTacticalInstruction).toEqual({
+      headingDegrees: 360,
+      altitudeFeet: 4_000,
+    });
+    // A vectored aircraft is no longer booked against the runway.
+    const conflicts = application.query({ type: "active-conflicts" }) as {
+      predicted: Array<{ aircraftIds: string[] }>;
+    };
+    expect(
+      conflicts.predicted.some(({ aircraftIds }) => aircraftIds.includes(ARRIVAL_ID)),
+    ).toBe(false);
+  });
+
+  it("re-establishes the approach and lands when a vectored arrival is cleared to land again", () => {
+    const { application, progress } = inboundArrival("tactical-d");
+    issueInstruction(application, { headingDegrees: 180 });
+    awaitReadback(application);
+    advanceSteps(application, 100);
+    expect(headingError(arrival(application).trackDegrees, 180)).toBeCloseTo(0, 3);
+
+    issueManualRunwayClearance(application, ARRIVAL_ID, {
+      kind: "clear-to-land",
+      runwayId: progress.runwayId,
+      runwayEnd: progress.runwayEnd,
+    });
+    awaitReadback(application);
+    advanceSteps(application, 10);
+
+    const rejoining = arrival(application);
+    expect(rejoining.activeTacticalInstruction).toBeUndefined();
+    expect(rejoining.activeRunwayClearance?.kind).toBe("clear-to-land");
+    expect(Math.abs(headingError(rejoining.trackDegrees, 180))).toBeGreaterThan(5);
+
+    const landed = advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === ARRIVAL_ID)?.exit === "landed",
+      20_000,
+    ).aircraft.find(({ id }) => id === ARRIVAL_ID);
+    expect(landed).toMatchObject({ flightPhase: "out-of-play", exit: "landed" });
+  });
+
+  it("hands off an arrival vectored out of the local control boundary", () => {
+    const { application } = inboundArrival("tactical-d");
+    issueInstruction(application, { headingDegrees: 360, speedKnots: 200 });
+    awaitReadback(application);
+    advanceSteps(application, 20);
+    expect(arrival(application).speedKnots).toBe(200);
+
+    const departed = advanceUntil(
+      application,
+      (snapshot) =>
+        snapshot.aircraft.find(({ id }) => id === ARRIVAL_ID)?.flightPhase ===
+        "out-of-play",
+      10_000,
+    ).aircraft.find(({ id }) => id === ARRIVAL_ID);
+    expect(departed).toMatchObject({
+      exit: "departed",
+      pilotState: "complete",
+      activeTacticalInstruction: undefined,
+    });
+    expect(
+      Math.hypot(
+        departed!.position.eastNauticalMiles,
+        departed!.position.northNauticalMiles,
+      ),
+    ).toBeCloseTo(8, 1);
+  });
+
+  it("replaces one vector with the next heading instruction", () => {
+    const { application } = inboundArrival("tactical-d");
+    issueInstruction(application, { headingDegrees: 360 });
+    awaitReadback(application);
+    advanceSteps(application, 50);
+    const northbound = arrival(application);
+    expect(headingError(northbound.trackDegrees, 360)).toBeCloseTo(0, 3);
+
+    issueInstruction(application, { headingDegrees: 90 });
+    awaitReadback(application);
+    advanceSteps(application, 50);
+    const eastbound = arrival(application);
+    expect(headingError(eastbound.trackDegrees, 90)).toBeCloseTo(0, 3);
+    expect(eastbound.position.eastNauticalMiles).toBeGreaterThan(
+      northbound.position.eastNauticalMiles,
+    );
+    // It keeps flying north only until the new heading is read back.
+    expect(
+      eastbound.position.northNauticalMiles - northbound.position.northNauticalMiles,
+    ).toBeLessThan(0.3);
+  });
+
+  it("complies with altitude and speed instructions while staying on the inbound path", () => {
+    const { application } = inboundArrival("tactical-d");
+    const before = arrival(application);
+    issueInstruction(application, { altitudeFeet: before.altitudeFeet + 1_000, speedKnots: 150 });
+    awaitReadback(application);
+    advanceSteps(application, 100);
+
+    const after = arrival(application);
+    expect(after.speedKnots).toBe(150);
+    expect(after.altitudeFeet).toBeGreaterThan(before.altitudeFeet);
+    expect(after.altitudeFeet).toBeLessThanOrEqual(before.altitudeFeet + 1_000);
+    expect(after.flightPhase).toBe("inbound");
+    // Still tracking toward the final approach fix, not on a vector.
+    expect(after.trackDegrees).toBeCloseTo(before.trackDegrees, 5);
+  });
+});

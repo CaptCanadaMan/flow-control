@@ -504,6 +504,7 @@ type TrafficStage =
   | "go-around"
   | "rollout"
   | "circuit"
+  | "vectored"
   | "done";
 
 type AircraftProgress = {
@@ -519,7 +520,20 @@ type AircraftProgress = {
   committedToLand?: boolean;
   forcedGoAroundOnNextGate?: boolean;
   lapDecision?: "touch-and-go" | "full-stop" | "extend";
+  // The heading a controller vector placed this aircraft on. Present only
+  // while the aircraft is flying that vector; a new heading replaces it and a
+  // landing or touch-and-go clearance clears it by re-establishing the path.
+  vectorHeadingDegrees?: number;
 };
+
+const AIRBORNE_STAGES: ReadonlySet<TrafficStage> = new Set<TrafficStage>([
+  "climb-out",
+  "inbound",
+  "approach",
+  "go-around",
+  "circuit",
+  "vectored",
+]);
 
 type OccupancyRecord = {
   runwayId: "09-27" | "04-22";
@@ -608,6 +622,46 @@ function finalApproachFix(
   const threshold = runwayThreshold(airport, runwayId, runwayEnd);
   const approachDirection = headingUnitVector(runwayEndHeadingDegrees(runwayEnd));
   return addScaled(threshold, approachDirection, -FINAL_APPROACH_FIX_DISTANCE_NM);
+}
+
+// A controller vector is expressed as one waypoint: the point where a straight
+// line from the aircraft along the assigned heading crosses the local control
+// boundary. Reaching it means the aircraft has been vectored out of the sector.
+function boundaryExitPoint(
+  airport: AirportGeometry,
+  position: MapPoint,
+  headingDegrees: number,
+): MapPoint {
+  const boundary = airport.localControlBoundary;
+  const direction = headingUnitVector(headingDegrees);
+  const offsetEast = position.eastNauticalMiles - boundary.center.eastNauticalMiles;
+  const offsetNorth =
+    position.northNauticalMiles - boundary.center.northNauticalMiles;
+  // Solve |offset + t * direction| = radius for the forward intersection.
+  const b = offsetEast * direction.eastNauticalMiles + offsetNorth * direction.northNauticalMiles;
+  const c =
+    offsetEast * offsetEast +
+    offsetNorth * offsetNorth -
+    boundary.radiusNauticalMiles * boundary.radiusNauticalMiles;
+  const discriminant = Math.max(0, b * b - c);
+  const distanceNm = Math.max(0.1, -b + Math.sqrt(discriminant));
+  return addScaled(position, direction, distanceNm);
+}
+
+// Move an altitude toward its target at the profile's climb rate; descents use
+// the same rate, which is adequate for the coarse kinematics used everywhere.
+function altitudeTowards(
+  currentFeet: number,
+  targetFeet: number,
+  climbRateFeetPerMinute: number,
+  deltaMs: number,
+) {
+  const maxChangeFeet = (climbRateFeetPerMinute / 60_000) * deltaMs;
+  const difference = targetFeet - currentFeet;
+  if (Math.abs(difference) <= maxChangeFeet) {
+    return targetFeet;
+  }
+  return Math.round(currentFeet + Math.sign(difference) * maxChangeFeet);
 }
 
 function missedApproachWaypoints(
@@ -2287,6 +2341,131 @@ function advanceTraffic(state: ApplicationState, deltaMs: number) {
       return aircraft;
     }
 
+    // A read-back heading instruction takes an airborne aircraft off whatever
+    // path it was flying and onto a controller vector. The vector supersedes
+    // any runway clearance; the controller re-clears to re-establish.
+    const instruction = aircraft.activeTacticalInstruction;
+    if (
+      AIRBORNE_STAGES.has(progress.stage) &&
+      instruction?.headingDegrees !== undefined &&
+      aircraft.pilotState === "operating" &&
+      progress.vectorHeadingDegrees !== instruction.headingDegrees
+    ) {
+      progress.stage = "vectored";
+      progress.vectorHeadingDegrees = instruction.headingDegrees;
+      progress.waypoints = [
+        boundaryExitPoint(
+          state.airport,
+          aircraft.position,
+          instruction.headingDegrees,
+        ),
+      ];
+      progress.waypointIndex = 0;
+      progress.stageStartedAtMs = state.simulationTimeMs;
+      delete progress.committedToLand;
+      delete progress.lapDecision;
+      transition();
+      next = {
+        ...next,
+        headingDegrees: instruction.headingDegrees,
+        trackDegrees: instruction.headingDegrees,
+        activeRunwayClearance: undefined,
+        flightPhase:
+          aircraft.flightPhase === "approach" ? "inbound" : aircraft.flightPhase,
+      };
+    }
+
+    if (progress.stage === "vectored") {
+      // Read the clearance from `next`: engagement above clears the clearance
+      // the vector superseded, and only a clearance issued afterwards counts.
+      const clearance = next.activeRunwayClearance;
+      const reestablish = (stage: "inbound" | "circuit", waypoints: MapPoint[]) => {
+        progress.stage = stage;
+        progress.waypoints = waypoints;
+        progress.waypointIndex = 0;
+        progress.stageStartedAtMs = state.simulationTimeMs;
+        delete progress.vectorHeadingDegrees;
+        transition();
+      };
+      if (
+        clearance?.kind === "clear-to-land" &&
+        clearance.runwayId === progress.runwayId
+      ) {
+        // Fly to the final approach fix, then the existing inbound → approach
+        // → rollout path takes over with the landing clearance still active.
+        reestablish("inbound", [
+          finalApproachFix(state.airport, progress.runwayId, progress.runwayEnd),
+        ]);
+        return {
+          ...next,
+          activeTacticalInstruction: undefined,
+          flightPhase: "inbound",
+        };
+      }
+      if (
+        clearance?.kind === "clear-touch-and-go" &&
+        clearance.runwayId === progress.runwayId
+      ) {
+        reestablish(
+          "circuit",
+          circuitEntryWaypoints(
+            state.airport,
+            progress.runwayId,
+            progress.runwayEnd,
+          ),
+        );
+        return {
+          ...next,
+          activeTacticalInstruction: undefined,
+          flightPhase: "circuit",
+        };
+      }
+      if (clearance) {
+        // Go-arounds and cancellations have nothing to act on while vectored.
+        next = { ...next, activeRunwayClearance: undefined };
+      }
+      const speedKnots =
+        instruction?.speedKnots !== undefined
+          ? instruction.speedKnots
+          : Math.max(aircraft.speedKnots, profile.approachSpeedKnots);
+      const moved = moveTowardsWaypoints(
+        next,
+        progress,
+        (speedKnots / 3_600_000) * deltaMs,
+      );
+      const altitudeFeet =
+        instruction?.altitudeFeet !== undefined
+          ? altitudeTowards(
+              aircraft.altitudeFeet,
+              instruction.altitudeFeet,
+              profile.climbRateFeetPerMinute,
+              deltaMs,
+            )
+          : aircraft.altitudeFeet;
+      if (moved.arrived) {
+        progress.stage = "done";
+        transition();
+        return {
+          ...next,
+          position: moved.position,
+          speedKnots,
+          altitudeFeet,
+          flightPhase: "out-of-play",
+          pilotState: "complete",
+          exit: "departed",
+          activeTacticalInstruction: undefined,
+        };
+      }
+      return {
+        ...next,
+        position: moved.position,
+        headingDegrees: moved.headingDegrees,
+        trackDegrees: moved.headingDegrees,
+        speedKnots,
+        altitudeFeet,
+      };
+    }
+
     if (progress.stage === "circuit") {
       const clearance = aircraft.activeRunwayClearance;
       const restartLap = () => {
@@ -2531,16 +2710,29 @@ function advanceTraffic(state: ApplicationState, deltaMs: number) {
       const direction = headingUnitVector(
         runwayEndHeadingDegrees(progress.runwayEnd),
       );
-      const speedKnots = profile.cruiseSpeedKnots;
+      const complying = aircraft.pilotState === "operating";
+      const speedKnots =
+        complying && instruction?.speedKnots !== undefined
+          ? instruction.speedKnots
+          : profile.cruiseSpeedKnots;
       const position = addScaled(
         aircraft.position,
         direction,
         (speedKnots / 3_600_000) * deltaMs,
       );
-      const altitudeFeet = Math.round(
-        aircraft.altitudeFeet +
-          (profile.climbRateFeetPerMinute / 60_000) * deltaMs,
-      );
+      // Departures climb unrestricted unless a read-back altitude caps them.
+      const altitudeFeet =
+        complying && instruction?.altitudeFeet !== undefined
+          ? altitudeTowards(
+              aircraft.altitudeFeet,
+              instruction.altitudeFeet,
+              profile.climbRateFeetPerMinute,
+              deltaMs,
+            )
+          : Math.round(
+              aircraft.altitudeFeet +
+                (profile.climbRateFeetPerMinute / 60_000) * deltaMs,
+            );
       const boundary = state.airport.localControlBoundary;
       if (
         distanceBetween(position, boundary.center) >
@@ -2567,13 +2759,19 @@ function advanceTraffic(state: ApplicationState, deltaMs: number) {
         beginGoAround(state, aircraft, progress);
         return { ...next, activeRunwayClearance: undefined };
       }
+      // Inbound aircraft comply with read-back speed and altitude instructions;
+      // the go-around procedure keeps its own profile.
+      const complying =
+        progress.stage === "inbound" && aircraft.pilotState === "operating";
       const speedKnots =
         progress.stage === "go-around"
           ? Math.max(
               profile.approachSpeedKnots,
               Math.min(profile.cruiseSpeedKnots, 160),
             )
-          : aircraft.speedKnots;
+          : complying && instruction?.speedKnots !== undefined
+            ? instruction.speedKnots
+            : aircraft.speedKnots;
       const moved = moveTowardsWaypoints(
         aircraft,
         progress,
@@ -2588,7 +2786,14 @@ function advanceTraffic(state: ApplicationState, deltaMs: number) {
                   (profile.climbRateFeetPerMinute / 60_000) * deltaMs,
               ),
             )
-          : aircraft.altitudeFeet;
+          : complying && instruction?.altitudeFeet !== undefined
+            ? altitudeTowards(
+                aircraft.altitudeFeet,
+                instruction.altitudeFeet,
+                profile.climbRateFeetPerMinute,
+                deltaMs,
+              )
+            : aircraft.altitudeFeet;
       if (moved.arrived) {
         progress.stage = "approach";
         progress.waypoints = [
