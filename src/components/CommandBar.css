@@ -107,3 +107,13 @@
 .command-bar-quantities {
   padding-top: 0.15rem;
 }
+
+.command-bar-step {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.5rem 0 0.15rem;
+  color: var(--fc-amber-soft);
+  font-family: var(--fc-font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+}

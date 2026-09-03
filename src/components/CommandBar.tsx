@@ -238,9 +238,10 @@ export function CommandBar({
       ));
     }
     if (verb === "climb" || verb === "descend") {
-      return ALTITUDES.filter((altitude) =>
+      const reachable = ALTITUDES.filter((altitude) =>
         verb === "climb" ? altitude > currentAltitude : altitude < currentAltitude,
-      ).map((altitude) => (
+      );
+      return (reachable.length > 0 ? reachable : ALTITUDES).map((altitude) => (
         <button
           type="button"
           key={altitude}
@@ -325,6 +326,10 @@ export function CommandBar({
   };
 
   const quantities = renderQuantities();
+  const verbLabel =
+    RUNWAY_VERBS.find(({ id }) => id === verb)?.label ??
+    TACTICAL_VERBS.find(({ id }) => id === verb)?.label ??
+    "";
 
   return (
     <section className="command-bar" aria-label="Command bar">
@@ -367,80 +372,92 @@ export function CommandBar({
         </button>
       </div>
 
-      <div className="command-bar-row" role="group" aria-label="Runway Clearances and Tactical Instructions">
-        {RUNWAY_VERBS.map(({ id, label }) => (
-          <button
-            type="button"
-            key={id}
-            className={`command-chip${verb === id ? " command-chip-on" : ""}`}
-            aria-pressed={verb === id}
-            disabled={!enabled}
-            onClick={() => chooseVerb(id)}
-          >
-            {label}
-          </button>
-        ))}
-        <span className="command-divider" aria-hidden="true" />
-        {TACTICAL_VERBS.map(({ id, label }) => (
-          <button
-            type="button"
-            key={id}
-            className={`command-chip${verb === id ? " command-chip-on" : ""}`}
-            aria-pressed={verb === id}
-            disabled={!enabled}
-            onClick={() => chooseVerb(id)}
-          >
-            {label}
-          </button>
-        ))}
-        <span className="command-divider" aria-hidden="true" />
-        <button
-          type="button"
-          className={`command-chip${instruction.localHoldId === "northwest-hold" ? " command-chip-on" : ""}`}
-          disabled={!enabled}
-          onClick={() => addPart({ localHoldId: "northwest-hold" })}
-        >
-          Hold NW
-        </button>
-        <button
-          type="button"
-          className={`command-chip${instruction.localHoldId === "southeast-hold" ? " command-chip-on" : ""}`}
-          disabled={!enabled}
-          onClick={() => addPart({ localHoldId: "southeast-hold" })}
-        >
-          Hold SE
-        </button>
-        <button
-          type="button"
-          className={`command-chip${instruction.orbitDirection === "left" ? " command-chip-on" : ""}`}
-          disabled={!enabled}
-          onClick={() => addPart({ orbitDirection: "left" })}
-        >
-          Orbit L
-        </button>
-        <button
-          type="button"
-          className={`command-chip${instruction.orbitDirection === "right" ? " command-chip-on" : ""}`}
-          disabled={!enabled}
-          onClick={() => addPart({ orbitDirection: "right" })}
-        >
-          Orbit R
-        </button>
-        <button
-          type="button"
-          className={`command-chip${instruction.circuit ? " command-chip-on" : ""}`}
-          disabled={!enabled}
-          onClick={() => addPart({ circuit: { action: "enter", circuitId: "runway-09-left" } })}
-        >
-          Enter circuit
-        </button>
-      </div>
-
       {quantities ? (
-        <div className="command-bar-row command-bar-quantities" role="group" aria-label="Values">
+        <div
+          className="command-bar-row command-bar-quantities"
+          role="group"
+          aria-label={`Values for ${verbLabel}`}
+        >
+          <button
+            type="button"
+            className="command-chip command-chip-quiet"
+            onClick={() => setVerb(undefined)}
+          >
+            ← Back
+          </button>
+          <span className="command-bar-step">{verbLabel}</span>
           {quantities}
         </div>
-      ) : null}
+      ) : (
+        <div className="command-bar-row" role="group" aria-label="Runway Clearances and Tactical Instructions">
+          {RUNWAY_VERBS.map(({ id, label }) => (
+            <button
+              type="button"
+              key={id}
+              className={`command-chip${verb === id ? " command-chip-on" : ""}`}
+              aria-pressed={verb === id}
+              disabled={!enabled}
+              onClick={() => chooseVerb(id)}
+            >
+              {label}
+            </button>
+          ))}
+          <span className="command-divider" aria-hidden="true" />
+          {TACTICAL_VERBS.map(({ id, label }) => (
+            <button
+              type="button"
+              key={id}
+              className={`command-chip${verb === id ? " command-chip-on" : ""}`}
+              aria-pressed={verb === id}
+              disabled={!enabled}
+              onClick={() => chooseVerb(id)}
+            >
+              {label}
+            </button>
+          ))}
+          <span className="command-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className={`command-chip${instruction.localHoldId === "northwest-hold" ? " command-chip-on" : ""}`}
+            disabled={!enabled}
+            onClick={() => addPart({ localHoldId: "northwest-hold" })}
+          >
+            Hold NW
+          </button>
+          <button
+            type="button"
+            className={`command-chip${instruction.localHoldId === "southeast-hold" ? " command-chip-on" : ""}`}
+            disabled={!enabled}
+            onClick={() => addPart({ localHoldId: "southeast-hold" })}
+          >
+            Hold SE
+          </button>
+          <button
+            type="button"
+            className={`command-chip${instruction.orbitDirection === "left" ? " command-chip-on" : ""}`}
+            disabled={!enabled}
+            onClick={() => addPart({ orbitDirection: "left" })}
+          >
+            Orbit L
+          </button>
+          <button
+            type="button"
+            className={`command-chip${instruction.orbitDirection === "right" ? " command-chip-on" : ""}`}
+            disabled={!enabled}
+            onClick={() => addPart({ orbitDirection: "right" })}
+          >
+            Orbit R
+          </button>
+          <button
+            type="button"
+            className={`command-chip${instruction.circuit ? " command-chip-on" : ""}`}
+            disabled={!enabled}
+            onClick={() => addPart({ circuit: { action: "enter", circuitId: "runway-09-left" } })}
+          >
+            Enter circuit
+          </button>
+        </div>
+      )}
     </section>
   );
 }
