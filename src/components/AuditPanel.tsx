@@ -9,7 +9,14 @@ export type OperationalReceiptRecord = {
   /** A concise declared operational outcome, never private model reasoning. */
   summary?: string;
   webMcp?: {
-    result?: { status?: string };
+    capability?: string;
+    input?: unknown;
+    result?: {
+      status?: string;
+      summary?: string;
+      affectedAircraft?: string[];
+    };
+    durationMs?: number;
   };
 };
 

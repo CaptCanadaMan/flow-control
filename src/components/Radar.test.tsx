@@ -26,7 +26,69 @@ describe("Radar", () => {
     expect(page).toContain('data-runway-id="04-22"');
     expect(page.match(/role="button"/g)).toHaveLength(snapshot.aircraft.length);
     expect(page.match(/tabindex="0"/g)).toHaveLength(snapshot.aircraft.length);
-    expect(page).toContain("FLOW 202 · 3,000 ft");
+    expect(page).toContain(">FLOW 202</text>");
+    expect(page).toContain("ARR · 3,000 ft");
+    expect(page).toContain("DEP · 0 ft");
+    expect(page).toContain("CCT · 1,000 ft");
+  });
+
+  it("hides out-of-play aircraft and encodes intention in the pip shape and label", () => {
+    const snapshot = snapshotForRadar();
+    const departed = snapshot.aircraft.find(({ id }) => id === "fc-101");
+    if (!departed) {
+      throw new Error("Expected FLOW 101 in the test snapshot");
+    }
+    departed.flightPhase = "out-of-play";
+    departed.exit = "departed";
+
+    const page = renderToStaticMarkup(<Radar snapshot={snapshot} />);
+
+    expect(page).not.toContain('data-aircraft-id="fc-101"');
+    expect(page.match(/role="button"/g)).toHaveLength(snapshot.aircraft.length - 1);
+    expect(page).toContain("radar-aircraft-arrival");
+    expect(page).toContain("radar-aircraft-circuit");
+    expect(page).toContain('aria-label="Select FLOW 202, arrival, inbound"');
+  });
+
+  it("marks the declared emergency from the MAYDAY transmission and shows the active clearance code", () => {
+    const snapshot = snapshotForRadar();
+    snapshot.transmissions = [
+      {
+        sequence: 1,
+        speaker: "pilot",
+        aircraftId: "fc-303",
+        text: "MAYDAY, MAYDAY, MAYDAY, FLOW 303, engine failure, requesting immediate landing.",
+        simulationTimeMs: 66_000,
+      },
+    ];
+    const emergency = snapshot.aircraft.find(({ id }) => id === "fc-303");
+    if (!emergency) {
+      throw new Error("Expected FLOW 303 in the test snapshot");
+    }
+    emergency.activeRunwayClearance = {
+      kind: "clear-to-land",
+      runwayId: "04-22",
+      runwayEnd: "22",
+    };
+
+    const page = renderToStaticMarkup(<Radar snapshot={snapshot} />);
+
+    expect(page).toContain("radar-aircraft-emergency");
+    expect(page).toContain("radar-emergency-ring");
+    expect(page).toContain("EMG · ARR · 3,500 ft · CTL 22");
+    expect(page).toContain('aria-label="Select FLOW 303, arrival, inbound, emergency"');
+  });
+
+  it("overlays the selected aircraft card beside its pip", () => {
+    const snapshot = snapshotForRadar();
+    const page = renderToStaticMarkup(
+      <Radar snapshot={snapshot} selectedAircraftId="fc-202" />,
+    );
+
+    expect(page).toContain('aria-label="Selected Aircraft FLOW 202"');
+    expect(page).toContain("King Air 350");
+    expect(page).toContain("3,000 ft · 180 kt · hdg 090°");
+    expect(page).toContain("No active runway Clearance");
   });
 
   it("scales runway length in nautical miles instead of stretching it across the scope", () => {
@@ -49,7 +111,7 @@ describe("Radar", () => {
 
     expect(page).toContain('data-aircraft-id="fc-202"');
     expect(page).toContain('aria-pressed="true"');
-    expect(page).toContain("radar-aircraft radar-aircraft-selected");
+    expect(page).toContain("radar-aircraft-selected");
   });
 
   it("shows runway occupancy and active local hold overlays only when supplied by the snapshot", () => {

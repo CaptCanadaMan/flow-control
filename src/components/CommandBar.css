@@ -1,0 +1,109 @@
+.command-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.75rem 0 0.5rem;
+}
+
+.command-bar-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
+.command-bar-callsign {
+  color: var(--fc-amber-soft);
+  font-family: var(--fc-font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.command-bar-hint {
+  color: var(--fc-muted);
+  font-size: 0.85rem;
+}
+
+.command-bar-spacer {
+  flex: 1;
+}
+
+.command-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: stretch;
+}
+
+.command-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--fc-tap);
+  padding: 0 0.95rem;
+  border: 1px solid var(--fc-border);
+  border-radius: 0.5rem;
+  color: var(--fc-text);
+  background: var(--fc-panel);
+  font-size: 0.88rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.command-chip:hover,
+.command-chip:focus-visible {
+  border-color: var(--fc-accent);
+  background: var(--fc-panel);
+}
+
+.command-chip-mono {
+  font-family: var(--fc-font-mono);
+}
+
+.command-chip-on {
+  border-color: var(--fc-accent);
+  color: var(--fc-heading);
+  background: var(--fc-accent-bg);
+}
+
+.command-chip-part {
+  min-height: 2.15rem;
+  padding: 0 0.65rem;
+  font-family: var(--fc-font-mono);
+  font-size: 0.8rem;
+}
+
+.command-chip-quiet {
+  color: var(--fc-muted);
+}
+
+.command-chip-send {
+  padding: 0 1.4rem;
+  border-color: var(--fc-accent);
+  color: var(--fc-bg);
+  background: var(--fc-accent);
+  font-weight: 600;
+}
+
+.command-chip-send:hover,
+.command-chip-send:focus-visible {
+  background: var(--fc-accent-soft);
+}
+
+.command-chip-send:disabled {
+  border-color: var(--fc-border);
+  color: var(--fc-muted);
+  background: #1b332c;
+  opacity: 1;
+}
+
+.command-divider {
+  width: 1px;
+  margin: 0.25rem 0.2rem;
+  background: var(--fc-border);
+}
+
+.command-bar-quantities {
+  padding-top: 0.15rem;
+}

@@ -2,19 +2,18 @@ import type { OperatingPosture, TowerSnapshot } from "./application";
 import { ActivePlanView } from "./components/ActivePlanView";
 import { AuditPanel, type OperationalReceiptRecord } from "./components/AuditPanel";
 import {
-  ManualControls,
+  CommandBar,
   type ManualRunwayClearance,
   type ManualTacticalInstruction,
-} from "./components/ManualControls";
+} from "./components/CommandBar";
 import { Radar } from "./components/Radar";
-import { SelectedAircraftView } from "./components/SelectedAircraftView";
 import {
   AuthorityStrip,
   StartupPanel,
   type ShiftPace,
 } from "./components/StartupPanel";
 import { ShiftScorecard } from "./components/ShiftScorecard";
-import { TransmissionHistory } from "./components/TransmissionHistory";
+import { LiveFeed } from "./components/LiveFeed";
 
 const POSTURE_LABELS: Record<OperatingPosture, string> = {
   observe: "Observe",
@@ -119,20 +118,22 @@ export function App({
 }) {
   if (!webMcpAvailable) {
     return (
-      <main>
-        <p>Flow Control compatibility check</p>
-        <h1>WebMCP is not available</h1>
-        <p>
-          Reopen Flow Control in the ChatGPT in-app browser, or use Chrome 149+
-          with WebMCP testing enabled.
-        </p>
+      <main className="preflight">
+        <section>
+          <p>Flow Control compatibility check</p>
+          <h1>WebMCP is not available</h1>
+          <p>
+            Reopen Flow Control in the ChatGPT in-app browser, or use Chrome 149+
+            with WebMCP testing enabled.
+          </p>
+        </section>
       </main>
     );
   }
 
   if (!snapshot) {
     return (
-      <main>
+      <main className="preflight">
         <header>
           <p>Flow Control · preflight</p>
           <h1>Supervise autonomy from one shared live workspace.</h1>
@@ -171,81 +172,55 @@ export function App({
   const selectedAircraft = snapshot.aircraft.find(
     ({ id }) => id === selectedAircraftId,
   );
+  const aircraftInPlay = snapshot.aircraft.filter(
+    ({ flightPhase }) => flightPhase !== "out-of-play",
+  ).length;
+  const shiftStatusLabel =
+    shiftStatus === "armed"
+      ? "Shift armed"
+      : shiftStatus === "completed"
+        ? "Shift complete"
+        : shiftStatus === "incomplete"
+          ? "Shift ended incomplete"
+          : "Tower Agent connected";
+  const authorityNote =
+    capabilitySynchronization === "awaiting-confirmation"
+      ? "Authority grant pending"
+      : capabilitySynchronization === "pending"
+        ? "Synchronizing capabilities"
+        : undefined;
+  const postureAction =
+    shiftStatus !== "active" ? null : capabilitySynchronization ===
+      "awaiting-confirmation" ? (
+      <button type="button" onClick={onConfirmTakeTheSector}>
+        Confirm Take the Sector
+      </button>
+    ) : capabilitySynchronization === "pending" ? null : operatingPosture ===
+      "take-the-sector" ? (
+      <button type="button" onClick={onReduceToObserve}>
+        Reduce to Observe
+      </button>
+    ) : operatingPosture === "observe" ? (
+      <button type="button" onClick={onRequestTakeTheSector}>
+        Request Take the Sector
+      </button>
+    ) : null;
+  const shiftEnded = shiftStatus === "completed" || shiftStatus === "incomplete";
 
   return (
-    <main>
-      <header>
-        <p>Flow Control · orchestration spike</p>
-        <h1>Supervise autonomy from one shared live workspace.</h1>
-        <p>
-          A Tower Agent handles delegated work while the Supervising Controller
-          retains authority, exceptional judgment, and an inspectable record.
-        </p>
-      </header>
-
-      {snapshot ? (
-        <section className="operating-canvas" aria-label="Operating canvas">
-          <AuthorityStrip
-            operatingPosture={situationPosture}
-            connectionHealth={connectionHealth}
-            stateVersion={stateVersion}
-            pendingOperatingPosture={pendingOperatingPosture}
-          />
-          <Radar
-            snapshot={snapshot}
-            selectedAircraftId={selectedAircraftId}
-            onSelectAircraft={onSelectAircraft}
-          />
-
-          <details className="operational-panel-shell" open>
-            <summary>Operational panel</summary>
-            <aside className="operational-panel" aria-label="Operational panel">
-            <section aria-labelledby="situation-heading">
-              <p>Situation</p>
-              <h2 id="situation-heading">{snapshot.aircraft.length} aircraft tracked</h2>
-              <p>
-                Wind {snapshot.weather.windDirectionDegrees}° at {snapshot.weather.windSpeedKnots} kt · Visibility {snapshot.weather.visibilityStatuteMiles} sm · Ceiling {snapshot.weather.ceilingFeet.toLocaleString()} ft
-              </p>
-              <p><strong>Operating Posture: {POSTURE_LABELS[situationPosture]}</strong></p>
-              {snapshot.runwayResources.runwayOccupancy.length === 0 ? (
-                <p>Runways clear.</p>
-              ) : (
-                <ul className="runway-occupancy" aria-label="Runway occupancy">
-                  {snapshot.runwayResources.runwayOccupancy.map((occupancy) => (
-                    <li key={`${occupancy.runwayId}-${occupancy.aircraftId}`}>
-                      Runway {occupancy.runwayId} occupied by {occupancy.callsign} ({occupancy.operation})
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-            <SelectedAircraftView
-              snapshot={snapshot}
-              selectedAircraftId={selectedAircraftId}
-            />
-            <ActivePlanView
-              snapshot={snapshot}
-              onSetMemberSelected={onSetClearancePlanMemberSelected}
-              onSelectAlternative={onSelectClearancePlanAlternative}
-              onEditTacticalInstruction={onEditClearancePlanTacticalInstruction}
-              onDispatchClearancePlan={onDispatchSelectedClearancePlan}
-              onApproveRecoveryPlan={onApproveRecoveryPlan}
-            />
-            {shiftStatus === "active" ? (
-              <ManualControls
-                selectedAircraft={selectedAircraft}
-                aircraft={snapshot.aircraft}
-                onIssueRunwayClearance={onIssueManualRunwayClearance}
-                onIssueTacticalInstruction={onIssueManualTacticalInstruction}
-              />
-            ) : null}
-            <TransmissionHistory snapshot={snapshot} />
-            <AuditPanel receipts={operationalReceipts} onExport={onExportAudit} />
-              <ShiftScorecard snapshot={snapshot} receipts={operationalReceipts} />
-            </aside>
-          </details>
-        </section>
-      ) : null}
+    <main className="workspace">
+      <AuthorityStrip
+        operatingPosture={situationPosture}
+        connectionHealth={connectionHealth}
+        stateVersion={stateVersion}
+        pendingOperatingPosture={pendingOperatingPosture}
+        shiftStatusLabel={shiftStatusLabel}
+        authorityNote={authorityNote}
+        simulationTimeMs={snapshot.simulationTimeMs}
+        aircraftInPlay={aircraftInPlay}
+        weather={snapshot.weather}
+        action={postureAction}
+      />
 
       {shiftStatus === "active" && connectionHealth !== "healthy" ? (
         connectionHealth === "warning" ? (
@@ -270,75 +245,69 @@ export function App({
         )
       ) : null}
 
-      <section aria-labelledby="shift-status">
-        <p>WebMCP ready</p>
-        <h2 id="shift-status">
-          {shiftStatus === "armed"
-            ? "Shift armed"
-            : shiftStatus === "completed"
-              ? "Shift complete"
-              : shiftStatus === "incomplete"
-                ? "Shift ended incomplete"
-                : "Tower Agent connected"}
-        </h2>
-        {shiftStatus === "armed" ? (
-          <p>
-            Traffic remains paused until the Tower Agent connects. Current
-            Operating Posture: <strong>{POSTURE_LABELS[operatingPosture]}</strong>.
-          </p>
-        ) : (
-          <p>
-            Shift active in <strong>{POSTURE_LABELS[operatingPosture]}</strong> · State Version {stateVersion}
-          </p>
-        )}
+      <section className="workspace-canvas" aria-label="Operating canvas">
+        <div className="workspace-scope">
+          <Radar
+            snapshot={snapshot}
+            selectedAircraftId={selectedAircraftId}
+            onSelectAircraft={onSelectAircraft}
+          />
+          {shiftStatus === "active" ? (
+            <CommandBar
+              selectedAircraft={selectedAircraft}
+              aircraft={snapshot.aircraft}
+              onIssueRunwayClearance={onIssueManualRunwayClearance}
+              onIssueTacticalInstruction={onIssueManualTacticalInstruction}
+            />
+          ) : null}
+        </div>
+
+        <aside className="operational-panel" aria-label="Operational panel">
+          {shiftStatus === "armed" ? (
+            <section className="panel-zone panel-armed" aria-labelledby="shift-status">
+              <h2 id="shift-status">Shift armed</h2>
+              <p>
+                Traffic remains paused until the Tower Agent connects in{" "}
+                <strong>{POSTURE_LABELS[operatingPosture]}</strong>. Ask the
+                browser agent to call:
+              </p>
+              <code>begin_tower_shift({`{"expectedStateVersion":0}`})</code>
+            </section>
+          ) : null}
+
+          {shiftEnded ? (
+            <ShiftScorecard snapshot={snapshot} receipts={operationalReceipts} />
+          ) : (
+            <>
+              <div className="panel-zone panel-plan">
+                <ActivePlanView
+                  snapshot={snapshot}
+                  onSetMemberSelected={onSetClearancePlanMemberSelected}
+                  onSelectAlternative={onSelectClearancePlanAlternative}
+                  onEditTacticalInstruction={onEditClearancePlanTacticalInstruction}
+                  onDispatchClearancePlan={onDispatchSelectedClearancePlan}
+                  onApproveRecoveryPlan={onApproveRecoveryPlan}
+                />
+                {stagedClearancePlanReference &&
+                !snapshot.stagedClearancePlan &&
+                !snapshot.stagedRecoveryPlan ? (
+                  <div className="staged-plan" role="status">
+                    <strong>Clearance Plan staged</strong>
+                    <code>{stagedClearancePlanReference}</code>
+                  </div>
+                ) : null}
+              </div>
+              <div className="panel-zone panel-feed">
+                <LiveFeed snapshot={snapshot} receipts={operationalReceipts} />
+              </div>
+            </>
+          )}
+
+          <div className="panel-zone panel-footer">
+            <AuditPanel receipts={operationalReceipts} onExport={onExportAudit} />
+          </div>
+        </aside>
       </section>
-
-      {shiftStatus === "armed" ? (
-        <section aria-labelledby="connect-agent">
-          <h2 id="connect-agent">Connect the Tower Agent</h2>
-          <p>Ask the browser agent to call:</p>
-          <code>begin_tower_shift({`{"expectedStateVersion":0}`})</code>
-        </section>
-      ) : (
-        <section aria-labelledby="monitoring">
-          <h2 id="monitoring">
-            {capabilitySynchronization === "awaiting-confirmation"
-              ? "Authority grant pending"
-              : capabilitySynchronization === "pending"
-                ? "Synchronizing capabilities"
-                : "Monitoring loop ready"}
-          </h2>
-          <p>
-            {pendingOperatingPosture
-              ? `${POSTURE_LABELS[pendingOperatingPosture]} is not active yet. Observe remains authoritative until confirmation and capability synchronization complete.`
-              : "Snapshot reads and bounded tower-event heartbeats are available to the connected Tower Agent."}
-          </p>
-          {stagedClearancePlanReference ? (
-            <div className="staged-plan" role="status">
-              <strong>Clearance Plan staged</strong>
-              <code>{stagedClearancePlanReference}</code>
-            </div>
-          ) : null}
-          {capabilitySynchronization === "awaiting-confirmation" ? (
-            <button type="button" onClick={onConfirmTakeTheSector}>
-              Confirm Take the Sector
-            </button>
-          ) : capabilitySynchronization === "pending" ? null : operatingPosture ===
-            "take-the-sector" ? (
-            <button type="button" onClick={onReduceToObserve}>
-              Reduce to Observe
-            </button>
-          ) : operatingPosture === "observe" ? (
-            <button type="button" onClick={onRequestTakeTheSector}>
-              Request Take the Sector
-            </button>
-          ) : null}
-        </section>
-      )}
-
-      <footer>
-        Illustrative simulation only — not for operational air traffic control.
-      </footer>
     </main>
   );
 }

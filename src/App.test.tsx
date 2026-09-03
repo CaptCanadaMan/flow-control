@@ -34,8 +34,9 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Selected Aircraft");
     expect(page).toContain("3,000 ft");
     expect(page).toContain("180 kt");
-    expect(page).toContain("<summary>Operational panel</summary>");
-    expect(page).toContain('<details class="operational-panel-shell" open="">');
+    expect(page).toContain('<main class="workspace">');
+    expect(page).toContain('aria-label="Operational panel"');
+    expect(page).not.toContain("operational-panel-shell");
   });
 
   it("exposes every aircraft as a keyboard-reachable radar selection target", () => {
@@ -84,7 +85,7 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Wind 270° at 12 kt");
     expect(page).toContain("Visibility 8 sm");
     expect(page).toContain("Ceiling 4,500 ft");
-    expect(page).toContain("Runway 09-27 occupied by FLOW 101 (departure)");
+    expect(page).toContain('aria-label="Runway 09-27 occupied by FLOW 101"');
     expect(page).toContain("Operating Posture: Assist");
   });
 

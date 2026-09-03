@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { OperatingPosture } from "../application";
 import "./startup-panel.css";
 
@@ -18,7 +19,25 @@ export type AuthorityStripProps = {
   connectionHealth: "healthy" | "warning" | "unavailable" | "reconnected";
   stateVersion: number;
   pendingOperatingPosture?: OperatingPosture;
+  shiftStatusLabel?: string;
+  authorityNote?: string;
+  simulationTimeMs?: number;
+  aircraftInPlay?: number;
+  weather?: {
+    windDirectionDegrees: number;
+    windSpeedKnots: number;
+    visibilityStatuteMiles: number;
+    ceilingFeet: number;
+  };
+  action?: ReactNode;
 };
+
+function formatSimulationClock(simulationTimeMs: number) {
+  const totalSeconds = Math.floor(simulationTimeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 const POSTURES: Array<{
   id: OperatingPosture;
@@ -74,7 +93,7 @@ export function createKickoffPrompt({
       "Execute authorized routine operations, notify on elevated action, and stage exceptional recovery for approval.",
   }[operatingPosture];
 
-  return `You are the Tower Agent for Flow Control. ${controller} selected ${POSTURE_LABELS[operatingPosture]} at ${pace}× pace. ${authority} Call begin_tower_shift with expectedStateVersion 0, then continuously monitor the shared live workspace with bounded tower-event waits until the Shift completes, monitoring is revoked, or repeated tool failure prevents continuation.`;
+  return `You are the Tower Agent for Flow Control. ${controller} selected ${POSTURE_LABELS[operatingPosture]} at ${pace}× pace. ${authority} Call begin_tower_shift with expectedStateVersion 0, then continuously monitor the shared live workspace with bounded tower-event waits (heartbeatAfterMs 1000) until the Shift completes, monitoring is revoked, or repeated tool failure prevents continuation. Quiet traffic means wait again, not stop. This Shift contains an emergency inbound (MAYDAY) needing Immediate Protection and then a Recovery Plan for approval, a rejected takeoff that keeps the runway occupied and needs an approved Recovery Plan before the departure is re-cleared, an independent go-around, and at least one "unable" readback that means replan, not error. Re-read the tower snapshot after any refusal or stale result, rediscover your tools after any authority change, and treat a stable-flow-restored event followed by a completed snapshot as the end of the Shift.`;
 }
 
 export function StartupPanel({
@@ -169,32 +188,72 @@ export function AuthorityStrip({
   connectionHealth,
   stateVersion,
   pendingOperatingPosture,
+  shiftStatusLabel,
+  authorityNote,
+  simulationTimeMs,
+  aircraftInPlay,
+  weather,
+  action,
 }: AuthorityStripProps) {
   const connection = CONNECTION_DETAILS[connectionHealth];
 
   return (
     <aside className="authority-strip" aria-label="Authority and connection status">
+      <span className="authority-strip__brand">
+        <strong>Flow Field</strong> Tower
+      </span>
       <span
         aria-label={`Operating Posture: ${POSTURE_LABELS[operatingPosture]}`}
         className="authority-strip__item"
       >
-        <strong>Operating Posture:</strong> {POSTURE_LABELS[operatingPosture]}
+        <small>Operating Posture</small>
+        <strong>{POSTURE_LABELS[operatingPosture]}</strong>
       </span>
       <span
         aria-label={`Connection: ${connection.label}`}
         className={`authority-strip__item authority-strip__connection authority-strip__connection--${connectionHealth}`}
       >
-        <span aria-hidden="true">{connection.symbol}</span>{" "}
-        <strong>Connection:</strong> {connection.label}
+        <small>Tower Agent</small>
+        <strong>
+          <span aria-hidden="true">{connection.symbol}</span>{" "}
+          {shiftStatusLabel ?? connection.label}
+        </strong>
       </span>
-      <span aria-label={`State Version ${stateVersion}`} className="authority-strip__item">
-        <strong>State Version</strong> {stateVersion}
+      {simulationTimeMs !== undefined ? (
+        <span className="authority-strip__item authority-strip__mono">
+          <small>Sim clock</small>
+          <strong>{formatSimulationClock(simulationTimeMs)}</strong>
+        </span>
+      ) : null}
+      {aircraftInPlay !== undefined ? (
+        <span className="authority-strip__item authority-strip__mono">
+          <small>In play</small>
+          <strong>{aircraftInPlay} aircraft</strong>
+        </span>
+      ) : null}
+      {weather ? (
+        <span className="authority-strip__item authority-strip__mono authority-strip__weather">
+          <small>Weather</small>
+          <strong>
+            Wind {weather.windDirectionDegrees}° at {weather.windSpeedKnots} kt ·
+            Visibility {weather.visibilityStatuteMiles} sm · Ceiling{" "}
+            {weather.ceilingFeet.toLocaleString()} ft
+          </strong>
+        </span>
+      ) : null}
+      <span aria-label={`State Version ${stateVersion}`} className="authority-strip__item authority-strip__mono">
+        <small>State Version</small>
+        <strong>{stateVersion}</strong>
       </span>
       {pendingOperatingPosture ? (
         <span className="authority-strip__pending">
+          {authorityNote ? `${authorityNote} · ` : ""}
           {POSTURE_LABELS[pendingOperatingPosture]} pending capability synchronization
         </span>
+      ) : authorityNote ? (
+        <span className="authority-strip__pending">{authorityNote}</span>
       ) : null}
+      {action ? <span className="authority-strip__action">{action}</span> : null}
     </aside>
   );
 }
