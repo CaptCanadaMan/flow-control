@@ -3179,33 +3179,45 @@ describe("Shift lifecycle", () => {
     ]);
   });
 
-  it("refuses a stale begin call without starting the Shift", () => {
+  it("connects a begin call while armed even when its State Version has drifted", () => {
     const application = createFlowControlApplication({
       scenarioSeed: "phase-0",
       operatingPosture: "observe",
     });
+    // Live traffic while armed moves the State Version before the agent's
+    // kickoff prompt (expectedStateVersion 0) is ever sent.
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 600,
+    });
+    const { stateVersion: driftedVersion } = application.query({
+      type: "tower-snapshot",
+    }) as { stateVersion: number };
+    expect(driftedVersion).toBeGreaterThan(0);
 
     const result = application.command({
       type: "begin-shift",
       actor: "tower-agent",
-      expectedStateVersion: 7,
+      expectedStateVersion: 0,
     });
 
-    expect(result).toEqual({
-      status: "stale",
-      stateVersion: 0,
-      summary: "Shift start refused because the expected State Version is stale.",
-      rationale: "Expected State Version 7; current State Version is 0.",
+    expect(result).toMatchObject({
+      status: "success",
+      stateVersion: driftedVersion + 1,
       nextAction: "get_tower_snapshot",
     });
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
-      shiftStatus: "armed",
-      stateVersion: 0,
+      shiftStatus: "active",
+      stateVersion: driftedVersion + 1,
     });
-    expect(application.query({ type: "available-capabilities" })).toEqual([
-      "begin_tower_shift",
-    ]);
-    expect(application.query({ type: "operational-receipts" })).toEqual([]);
+    expect(
+      (application.query({ type: "operational-receipts" }) as unknown[]).at(-1),
+    ).toMatchObject({
+      action: "shift-began",
+      stateVersionBefore: driftedVersion,
+      stateVersionAfter: driftedVersion + 1,
+    });
   });
 
   it("refuses a cached begin call after the Shift is already active", () => {
@@ -3231,6 +3243,45 @@ describe("Shift lifecycle", () => {
       summary: "Shift start refused because the Shift is already active.",
     });
     expect(application.query({ type: "operational-receipts" })).toHaveLength(1);
+  });
+
+  it("runs traffic from arming so the sector is live before the Tower Agent connects", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+      simulation: { fixedTimeStepMs: 100, paceMultiplier: 1 },
+    });
+
+    const advanced = application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 50,
+    });
+
+    expect(advanced).toMatchObject({ status: "success" });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      shiftStatus: "armed",
+      simulationTimeMs: 5_000,
+    });
+    // Only the connection capability is offered until the agent begins.
+    expect(application.query({ type: "available-capabilities" })).toEqual([
+      "begin_tower_shift",
+    ]);
+
+    const { stateVersion } = application.query({
+      type: "tower-snapshot",
+    }) as { stateVersion: number };
+    const began = application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: stateVersion,
+    });
+
+    expect(began).toMatchObject({ status: "success" });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      shiftStatus: "active",
+      simulationTimeMs: 5_000,
+    });
   });
 
   it("refuses monitoring before the Shift is active", async () => {

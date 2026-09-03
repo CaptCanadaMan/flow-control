@@ -278,15 +278,21 @@ describe("WebMCP preflight", () => {
     expect(page).not.toContain("Shift armed");
   });
 
-  it("shows an armed Observe Shift without starting operational time", () => {
+  it("shows an armed Observe Shift with live traffic and controller commands before the agent connects", () => {
     const page = renderToStaticMarkup(
-      <App webMcpAvailable snapshot={configuredSnapshot()} />,
+      <App
+        webMcpAvailable
+        snapshot={configuredSnapshot()}
+        selectedAircraftId="fc-202"
+      />,
     );
 
     expect(page).toContain("Shift armed");
     expect(page).toContain("Observe");
-    expect(page).toContain("Traffic remains paused");
+    expect(page).toContain("Traffic is live");
+    expect(page).not.toContain("Traffic remains paused");
     expect(page).toContain("begin_tower_shift");
+    expect(page).toContain('aria-label="Command bar"');
   });
 
   it("shows the active State Version after the Tower Agent connects", () => {

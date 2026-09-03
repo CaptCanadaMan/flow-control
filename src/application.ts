@@ -3090,12 +3090,15 @@ export function createFlowControlApplication(options: {
       }
 
       if (command.type === "advance-simulation") {
-        if (state.shiftStatus !== "active") {
+        // Traffic runs from the moment the Shift is armed so the Supervising
+        // Controller can work the sector, and demonstrate Observe, before (or
+        // without) a Tower Agent connecting.
+        if (state.shiftStatus !== "active" && state.shiftStatus !== "armed") {
           return {
             status: "refusal" as const,
             stateVersion: state.stateVersion,
-            summary: "Simulation time cannot advance before the Shift begins.",
-            nextAction: "begin_tower_shift" as const,
+            summary: "Simulation time cannot advance after the Shift has ended.",
+            nextAction: "get_tower_snapshot" as const,
           };
         }
 
@@ -3110,7 +3113,7 @@ export function createFlowControlApplication(options: {
         }
 
         for (let step = 0; step < steps; step += 1) {
-          if (state.shiftStatus !== "active") {
+          if (state.shiftStatus !== "active" && state.shiftStatus !== "armed") {
             break;
           }
           const deltaMs =
@@ -3249,7 +3252,17 @@ export function createFlowControlApplication(options: {
         };
       }
 
-      if (command.expectedStateVersion !== state.stateVersion) {
+      // Traffic runs while the Shift is armed, so the State Version has usually
+      // moved by the time the Tower Agent connects, and the only capability it
+      // holds until then is begin_tower_shift. The begin call is therefore a
+      // pure connection while armed; it still refuses once active or ended.
+      const connectingWhileArmed =
+        command.type === "begin-shift" && state.shiftStatus === "armed";
+
+      if (
+        !connectingWhileArmed &&
+        command.expectedStateVersion !== state.stateVersion
+      ) {
         return {
           status: "stale" as const,
           stateVersion: state.stateVersion,

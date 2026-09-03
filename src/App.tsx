@@ -286,7 +286,7 @@ export function App({
             onSelectAircraft={onSelectAircraft}
             onClearSelection={onClearSelection}
           />
-          {shiftStatus === "active" ? (
+          {shiftStatus === "armed" || shiftStatus === "active" ? (
             <CommandBar
               selectedAircraft={selectedAircraft}
               aircraft={snapshot.aircraft}
@@ -301,7 +301,8 @@ export function App({
             <section className="panel-zone panel-armed" aria-labelledby="shift-status">
               <h2 id="shift-status">Shift armed</h2>
               <p>
-                Traffic remains paused until the Tower Agent connects in{" "}
+                Traffic is live and you hold the sector. The Tower Agent has
+                not connected yet; it will join in{" "}
                 <strong>{POSTURE_LABELS[operatingPosture]}</strong>. Ask the
                 browser agent to call:
               </p>

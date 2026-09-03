@@ -103,7 +103,12 @@ function FlowControlPage() {
   }, []);
 
   useEffect(() => {
-    if (!application || snapshot?.shiftStatus !== "active") {
+    // The clock runs from arming until the Shift ends, whether or not a Tower
+    // Agent ever connects.
+    if (
+      !application ||
+      (snapshot?.shiftStatus !== "armed" && snapshot?.shiftStatus !== "active")
+    ) {
       return;
     }
 

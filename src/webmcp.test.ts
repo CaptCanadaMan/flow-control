@@ -89,7 +89,7 @@ describe("WebMCP capability lifecycle", () => {
     });
   });
 
-  it("keeps only the armed capability registered after a stale begin call", async () => {
+  it("connects a begin call whose State Version drifted while traffic ran armed", async () => {
     const registeredTools: Array<{
       name: string;
       execute: (input: unknown) => unknown;
@@ -108,18 +108,32 @@ describe("WebMCP capability lifecycle", () => {
       operatingPosture: "observe",
     });
     await connectWebMcp({ application, modelContext });
+    application.command({
+      type: "advance-simulation",
+      actor: "simulation-clock",
+      steps: 600,
+    });
+    // Traffic alone never expands the armed capability surface.
+    expect(registeredTools).toHaveLength(1);
 
     const beginRegistration = registeredTools[0];
-    const result = await beginRegistration.execute({ expectedStateVersion: 7 });
+    const result = await beginRegistration.execute({ expectedStateVersion: 0 });
 
-    expect(result).toMatchObject({ status: "stale", stateVersion: 0 });
-    expect(beginRegistration.signal.aborted).toBe(false);
+    expect(result).toMatchObject({ status: "success" });
+    await vi.waitFor(() => {
+      expect(beginRegistration.signal.aborted).toBe(true);
+    });
     expect(
       registeredTools
         .filter(({ signal }) => !signal.aborted)
         .map(({ name }) => name),
-    ).toEqual(["begin_tower_shift"]);
-    expect(registeredTools).toHaveLength(1);
+    ).toEqual([
+      "get_tower_snapshot",
+      "wait_for_tower_event",
+      "get_selected_context",
+      "get_active_conflicts",
+      "evaluate_clearance_set",
+    ]);
   });
 
   it("revokes mutation capabilities after a human reduction to Observe", async () => {
