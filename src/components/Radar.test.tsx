@@ -91,6 +91,19 @@ describe("Radar", () => {
     expect(page).toContain("No active runway Clearance");
   });
 
+  it("renders the selected card as an HTML overlay with a dismissal control, never a foreignObject", () => {
+    const snapshot = snapshotForRadar();
+    const page = renderToStaticMarkup(
+      <Radar snapshot={snapshot} selectedAircraftId="fc-202" onClearSelection={() => undefined} />,
+    );
+
+    expect(page).not.toContain("<foreignObject");
+    expect(page).toContain('class="radar-card"');
+    expect(page).toContain('aria-label="Deselect FLOW 202"');
+    expect(page.match(/role="button"/g)).toHaveLength(snapshot.aircraft.length);
+    expect(page.match(/tabindex="0"/g)).toHaveLength(snapshot.aircraft.length);
+  });
+
   it("scales runway length in nautical miles instead of stretching it across the scope", () => {
     const snapshot = snapshotForRadar();
     const page = renderToStaticMarkup(<Radar snapshot={snapshot} />);

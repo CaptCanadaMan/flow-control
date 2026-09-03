@@ -41,6 +41,7 @@ export function App({
   onCopyKickoffPrompt,
   selectedAircraftId,
   onSelectAircraft,
+  onClearSelection,
   onApproveRecoveryPlan,
   onSetClearancePlanMemberSelected,
   onDispatchSelectedClearancePlan,
@@ -87,6 +88,7 @@ export function App({
   >;
   selectedAircraftId?: string;
   onSelectAircraft?: (aircraftId: string) => void;
+  onClearSelection?: () => void;
   onApproveRecoveryPlan?: () => void;
   onSetClearancePlanMemberSelected?: (memberId: string, selected: boolean) => void;
   onDispatchSelectedClearancePlan?: () => void;
@@ -251,6 +253,7 @@ export function App({
             snapshot={snapshot}
             selectedAircraftId={selectedAircraftId}
             onSelectAircraft={onSelectAircraft}
+            onClearSelection={onClearSelection}
           />
           {shiftStatus === "active" ? (
             <CommandBar

@@ -1640,6 +1640,41 @@ describe("Shift lifecycle", () => {
     ).toBe(finalSnapshot.stateVersion);
   });
 
+  it("clears the Supervising Controller's aircraft selection without touching the State Version", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-5-clear-selection",
+      operatingPosture: "observe",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    application.command({
+      type: "select-aircraft",
+      actor: "supervising-controller",
+      aircraftId: "fc-202",
+    });
+    expect(application.query({ type: "selected-context" })).toMatchObject({
+      selectionStatus: "selected",
+      selectedAircraftId: "fc-202",
+    });
+
+    expect(
+      application.command({
+        type: "clear-aircraft-selection",
+        actor: "supervising-controller",
+      }),
+    ).toMatchObject({ status: "success", stateVersion: 1 });
+    expect(application.query({ type: "selected-context" })).toMatchObject({
+      selectionStatus: "none",
+    });
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot)
+        .selectedAircraftId,
+    ).toBeUndefined();
+  });
+
   it("replays clearance-gated traffic deterministically from the same Scenario Seed", () => {
     const runShift = () => {
       const application = createFlowControlApplication({

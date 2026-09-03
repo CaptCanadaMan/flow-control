@@ -174,6 +174,15 @@ function FlowControlPage() {
           aircraftId,
         });
       }}
+      onClearSelection={() => {
+        if (!application || !snapshot?.selectedAircraftId) {
+          return;
+        }
+        application.command({
+          type: "clear-aircraft-selection",
+          actor: "supervising-controller",
+        });
+      }}
       onApproveRecoveryPlan={() => {
         if (!application || !snapshot?.stagedRecoveryPlan) {
           return;

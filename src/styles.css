@@ -207,7 +207,7 @@ main.workspace {
   border-right: 1px solid var(--fc-border);
 }
 
-.workspace-scope > .radar-scope {
+.workspace-scope > .radar-frame {
   flex: 1;
   width: auto;
   max-width: 100%;
@@ -324,7 +324,7 @@ main.workspace {
     border-bottom: 1px solid var(--fc-border);
   }
 
-  .workspace-scope > .radar-scope {
+  .workspace-scope > .radar-frame {
     width: min(100%, 38rem);
   }
 }

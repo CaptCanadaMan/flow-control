@@ -16,6 +16,7 @@ type RadarProps = {
   >;
   selectedAircraftId?: string;
   onSelectAircraft?: (aircraftId: string) => void;
+  onClearSelection?: () => void;
 };
 
 type RadarAircraft = RadarProps["snapshot"]["aircraft"][number];
@@ -241,6 +242,7 @@ export function Radar({
   snapshot,
   selectedAircraftId,
   onSelectAircraft,
+  onClearSelection,
 }: RadarProps) {
   const aircraftInPlay = useMemo(
     () => snapshot.aircraft.filter(({ flightPhase }) => flightPhase !== "out-of-play"),
@@ -264,7 +266,25 @@ export function Radar({
     ({ id }) => id === selectedAircraft?.capabilityProfileId,
   );
 
+  const selectedPoint = selectedAircraft
+    ? (aircraftPoints[selectedAircraft.id] ?? projectPosition(selectedAircraft.position))
+    : undefined;
+
   return (
+    <div
+      className="radar-frame"
+      onClick={(event) => {
+        // Dead space within the radar (anything that is not an aircraft or
+        // the selected card) clears the Supervising Controller's selection.
+        const target = event.target as Element | null;
+        if (
+          selectedAircraftId &&
+          !target?.closest?.(".radar-aircraft, .radar-card")
+        ) {
+          onClearSelection?.();
+        }
+      }}
+    >
     <svg
       className="radar-scope"
       viewBox="0 0 100 100"
@@ -391,11 +411,17 @@ export function Radar({
               tabIndex={0}
               aria-pressed={isSelected}
               aria-label={`Select ${aircraft.callsign}, ${aircraft.intention}, ${aircraft.flightPhase}${isEmergency ? ", emergency" : ""}`}
-              onClick={() => onSelectAircraft?.(aircraft.id)}
+              onClick={() =>
+                isSelected ? onClearSelection?.() : onSelectAircraft?.(aircraft.id)
+              }
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  onSelectAircraft?.(aircraft.id);
+                  if (isSelected) {
+                    onClearSelection?.();
+                  } else {
+                    onSelectAircraft?.(aircraft.id);
+                  }
                 }
               }}
             >
@@ -422,27 +448,36 @@ export function Radar({
         );
       })}
 
-      {selectedAircraft ? (
+    </svg>
+
+      {selectedAircraft && selectedPoint ? (
         (() => {
-          const point =
-            aircraftPoints[selectedAircraft.id] ?? projectPosition(selectedAircraft.position);
-          const cardWidth = 40;
-          const cardHeight = 22;
-          const placeLeft = point.x > SCOPE_CENTER;
-          const cardX = placeLeft ? point.x - cardWidth - 4 : point.x + 4;
-          const cardY = Math.min(100 - cardHeight - 2, Math.max(2, point.y + 3));
+          const placeLeft = selectedPoint.x > SCOPE_CENTER;
+          const placeAbove = selectedPoint.y > 62;
           const clearance = selectedAircraft.activeRunwayClearance;
           const instruction = instructionSummary(selectedAircraft);
+          const className = [
+            "radar-card",
+            placeLeft ? "radar-card-left" : "",
+            placeAbove ? "radar-card-above" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
           return (
-            <foreignObject
-              className="radar-card"
-              x={cardX}
-              y={cardY}
-              width={cardWidth}
-              height={cardHeight}
+            <div
+              className={className}
+              style={{ left: `${selectedPoint.x}%`, top: `${selectedPoint.y}%` }}
               aria-label={`Selected Aircraft ${selectedAircraft.callsign}`}
             >
               <div className="radar-card-body">
+                <button
+                  type="button"
+                  className="radar-card-close"
+                  aria-label={`Deselect ${selectedAircraft.callsign}`}
+                  onClick={onClearSelection}
+                >
+                  ×
+                </button>
                 <p className="radar-card-eyebrow">Selected Aircraft</p>
                 <p className="radar-card-title">
                   <span>{selectedAircraft.callsign}</span>
@@ -463,10 +498,10 @@ export function Radar({
                   {instruction ? `Instruction: ${instruction}` : "No Tactical Instruction"}
                 </p>
               </div>
-            </foreignObject>
+            </div>
           );
         })()
       ) : null}
-    </svg>
+    </div>
   );
 }

@@ -936,6 +936,11 @@ type SelectAircraftCommand = {
   aircraftId: string;
 };
 
+type ClearAircraftSelectionCommand = {
+  type: "clear-aircraft-selection";
+  actor: "supervising-controller";
+};
+
 type StageClearancePlanCommand = {
   type: "stage-clearance-plan";
   actor: "tower-agent";
@@ -1025,6 +1030,7 @@ type Command =
   | SetAgentWaitCommand
   | RecordWebMcpToolExecutionCommand
   | SelectAircraftCommand
+  | ClearAircraftSelectionCommand
   | StageClearancePlanCommand
   | StageRecoveryPlanCommand
   | SetClearancePlanMemberSelectionCommand
@@ -3059,6 +3065,18 @@ export function createFlowControlApplication(options: {
           status: "success" as const,
           stateVersion: state.stateVersion,
           summary: `${aircraft.callsign} selected by the Supervising Controller.`,
+          nextAction: "continue" as const,
+        };
+      }
+
+      if (command.type === "clear-aircraft-selection") {
+        delete state.selectedAircraftId;
+        const snapshot = towerSnapshot();
+        subscribers.forEach((subscriber) => subscriber(snapshot));
+        return {
+          status: "success" as const,
+          stateVersion: state.stateVersion,
+          summary: "Aircraft selection cleared by the Supervising Controller.",
           nextAction: "continue" as const,
         };
       }
