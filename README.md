@@ -21,7 +21,7 @@ Human interface actions and WebMCP tool calls enter through the same command/que
 
 ## Running the demo
 
-Requirements: a WebMCP-capable browser host. Tested with ChatGPT's in-app browser. Also tested with Claude through [webmcp-mcp-adapter](https://github.com/CaptCanadaMan/webmcp-mcp-adapter), a separate project that exposes the page's WebMCP tools to agents without native WebMCP browser support.
+Requirements: a WebMCP-capable browser host. Tested with ChatGPT's in-app browser.
 
 1. Open https://flow.ahorsburgh.com in the WebMCP-capable browser.
 2. On preflight, choose **Take the Sector** and the recommended 1.5x Shift pace, then arm the workspace.
