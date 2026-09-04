@@ -3184,12 +3184,18 @@ describe("Shift lifecycle", () => {
       scenarioSeed: "phase-0",
       operatingPosture: "observe",
     });
-    // Live traffic while armed moves the State Version before the agent's
-    // kickoff prompt (expectedStateVersion 0) is ever sent.
+    // The Supervising Controller works live traffic while armed, so the State
+    // Version has moved before the agent's kickoff prompt (expectedStateVersion
+    // 0) is ever sent.
     application.command({
       type: "advance-simulation",
       actor: "simulation-clock",
-      steps: 600,
+      steps: 50,
+    });
+    issueManualRunwayClearance(application, "fc-101", {
+      kind: "hold-short",
+      runwayId: "09-27",
+      runwayEnd: "09",
     });
     const { stateVersion: driftedVersion } = application.query({
       type: "tower-snapshot",

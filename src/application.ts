@@ -3347,9 +3347,18 @@ export function createFlowControlApplication(options: {
               });
             }
           }
+          // The State Version guards agent commands against acting on changed
+          // operational facts. Routine clock bookkeeping (an aircraft moving
+          // between stages, runway occupancy clearing, a normal readback) is
+          // recorded as a receipt but does not bump it; otherwise the agent's
+          // snapshot-then-act round trip loses a race with the clock at any
+          // pace. Pilot-owned go-arounds, unable reports, deck events, and
+          // every human or agent decision still bump it.
           for (const trafficEvent of advanceTraffic(state, deltaMs)) {
             const stateVersionBefore = state.stateVersion;
-            state.stateVersion += 1;
+            if (trafficEvent.kind === "pilot-go-around-executed") {
+              state.stateVersion += 1;
+            }
             state.operationalReceipts.push({
               actor: command.actor,
               action: trafficEvent.kind,
@@ -3376,7 +3385,6 @@ export function createFlowControlApplication(options: {
           }
           if (advanceRunwayResources(state)) {
             const stateVersionBefore = state.stateVersion;
-            state.stateVersion += 1;
             state.operationalReceipts.push({
               actor: command.actor,
               action: "runway-resources-transition",
@@ -3387,7 +3395,9 @@ export function createFlowControlApplication(options: {
           }
           for (const readback of deliverDuePilotReadbacks(state)) {
             const stateVersionBefore = state.stateVersion;
-            state.stateVersion += 1;
+            if (readback.kind === "unable") {
+              state.stateVersion += 1;
+            }
             state.operationalReceipts.push({
               actor: "simulation-clock",
               action:
