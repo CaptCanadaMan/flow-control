@@ -3472,7 +3472,7 @@ export function createFlowControlApplication(options: {
               stateVersionAfter: state.stateVersion,
               ...(readback.kind === "unable"
                 ? {
-                    summary: `Pilot reported unable; replan this aircraft: ${readback.text}`,
+                    summary: `Pilot reported unable: ${readback.text} Nothing was accepted, so this aircraft holds no Clearance and an arrival will go around at the decision gate unless it is re-cleared or delayed. A fresh Clearance or Tactical Instruction is accepted now; replan this aircraft.`,
                   }
                 : {}),
             });
@@ -3712,8 +3712,8 @@ export function createFlowControlApplication(options: {
         return {
           status: "success" as const,
           stateVersion: state.stateVersion,
-          summary: `${text} Pilot readback is pending.`,
-          nextAction: "continue" as const,
+          summary: `${text} Pilot readback is pending: call wait_for_tower_event now and wait for the readback event before assuming compliance. An unable readback means nothing was accepted and the aircraft must be replanned or re-cleared.`,
+          nextAction: "wait_for_tower_event" as const,
         };
       }
 
@@ -3828,8 +3828,8 @@ export function createFlowControlApplication(options: {
         return {
           status: "success" as const,
           stateVersion: state.stateVersion,
-          summary: `${text} Pilot readback is pending.`,
-          nextAction: "continue" as const,
+          summary: `${text} Pilot readback is pending: call wait_for_tower_event now and wait for the readback event before assuming compliance. An unable readback means nothing was accepted and the aircraft must be replanned or re-cleared.`,
+          nextAction: "wait_for_tower_event" as const,
         };
       }
 
@@ -3905,7 +3905,7 @@ export function createFlowControlApplication(options: {
         return {
           status: "success" as const,
           stateVersion: state.stateVersion,
-          summary: `Clearance Plan ${command.planReference} staged for human review.`,
+          summary: `Clearance Plan ${command.planReference} staged for human review. Nothing is dispatched until the Supervising Controller acts; call wait_for_tower_event now and keep monitoring while the plan is reviewed.`,
           nextAction: "await-plan-review" as const,
         };
       }
@@ -4463,7 +4463,7 @@ export function createFlowControlApplication(options: {
         return {
           status: "approval-required" as const,
           stateVersion: state.stateVersion,
-          summary: `Recovery Plan ${command.planReference} staged for explicit human approval.`,
+          summary: `Recovery Plan ${command.planReference} staged for explicit human approval. Nothing is dispatched until the Supervising Controller approves; call wait_for_tower_event now and keep monitoring, and recalculate from current state if the plan expires.`,
           nextAction: "review-recovery-plan" as const,
         };
       }
@@ -4819,7 +4819,7 @@ export function createFlowControlApplication(options: {
                 cursor: query.cursor,
                 stateVersion: state.stateVersion,
                 simulationTime: state.simulationTimeMs,
-                summary: "Tower Agent monitoring is current.",
+                summary: `No new events yet; traffic is live and the Shift continues. Call wait_for_tower_event again with cursor ${query.cursor}. Do not end the task until shift-completed or monitoring is revoked.`,
                 actionRequired: false,
               });
             }, query.heartbeatAfterMs);

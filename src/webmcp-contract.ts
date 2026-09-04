@@ -239,7 +239,7 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   wait_for_tower_event: {
     description:
-      "Wait from the supplied operational event cursor for the next material Shift change, cancellation, or bounded heartbeat. Reuse the returned cursor on the next call.",
+      "Wait from the supplied operational event cursor for the next material Shift change, cancellation, or bounded heartbeat. Reuse the returned cursor on the next call. This is the Tower Agent's monitoring loop: call it again immediately after every result, including heartbeats and after dispatching or staging work, and stop only on shift-completed or when monitoring is revoked.",
     inputSchema: strictObjectSchema(
       {
         cursor: {

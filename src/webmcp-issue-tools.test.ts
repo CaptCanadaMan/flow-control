@@ -171,7 +171,7 @@ it("registers and executes complete runway and compound Tactical Instruction con
     simulationTimeMs: 0,
     affectedAircraft: ["fc-101"],
     summary: expect.stringContaining("FLOW 101"),
-    nextAction: "continue",
+    nextAction: "wait_for_tower_event",
   });
 
   expect(
@@ -193,7 +193,7 @@ it("registers and executes complete runway and compound Tactical Instruction con
     summary: expect.stringContaining(
       "heading 120, altitude 3000 feet, speed 170 knots, sequence behind fc-101",
     ),
-    nextAction: "continue",
+    nextAction: "wait_for_tower_event",
   });
   const snapshot = application.query({
     type: "tower-snapshot",

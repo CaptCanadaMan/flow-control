@@ -1799,7 +1799,7 @@ describe("Shift lifecycle", () => {
     expect(runwayResult).toMatchObject({
       status: "success",
       stateVersion: 2,
-      nextAction: "continue",
+      nextAction: "wait_for_tower_event",
     });
 
     const tacticalResult = application.command({
@@ -1816,7 +1816,7 @@ describe("Shift lifecycle", () => {
     expect(tacticalResult).toMatchObject({
       status: "success",
       stateVersion: 3,
-      nextAction: "continue",
+      nextAction: "wait_for_tower_event",
     });
 
     const issuedSnapshot = application.query({
@@ -2401,7 +2401,7 @@ describe("Shift lifecycle", () => {
       status: "approval-required",
       stateVersion: 2,
       summary:
-        "Recovery Plan go-around-recovery staged for explicit human approval.",
+        "Recovery Plan go-around-recovery staged for explicit human approval. Nothing is dispatched until the Supervising Controller approves; call wait_for_tower_event now and keep monitoring, and recalculate from current state if the plan expires.",
       nextAction: "review-recovery-plan",
     });
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
@@ -3215,7 +3215,8 @@ describe("Shift lifecycle", () => {
       cursor: 0,
       stateVersion: 1,
       simulationTime: 0,
-      summary: "Tower Agent monitoring is current.",
+      summary:
+        "No new events yet; traffic is live and the Shift continues. Call wait_for_tower_event again with cursor 0. Do not end the task until shift-completed or monitoring is revoked.",
       actionRequired: false,
     });
   });
@@ -3948,7 +3949,8 @@ describe("Shift lifecycle", () => {
     expect(result).toMatchObject({
       status: "success",
       stateVersion: 2,
-      summary: "Clearance Plan phase-0-check staged for human review.",
+      summary:
+        "Clearance Plan phase-0-check staged for human review. Nothing is dispatched until the Supervising Controller acts; call wait_for_tower_event now and keep monitoring while the plan is reviewed.",
       nextAction: "await-plan-review",
     });
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
