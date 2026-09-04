@@ -1150,22 +1150,42 @@ function monitoringEventAt(
   if (!receipt) {
     return undefined;
   }
-  const routineActions = new Set<OperationalReceipt["action"]>([
-    "aircraft-state-transition",
-    "runway-resources-transition",
-    "pilot-readback-received",
-  ]);
-  const actionRequired = !routineActions.has(receipt.action);
+  const actionRequired = !NO_AGENT_ACTION_EVENTS.has(receipt.action);
+  const label = `${receipt.action.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase())}.`;
+  // The event summary is the only prose a hosted Tower Agent sees between
+  // calls. A bare action name with actionRequired set tends to make the agent
+  // end its task to ask the human what to do, so every event says what the
+  // agent should do next.
+  const summary =
+    receipt.summary ??
+    (actionRequired
+      ? `${label} Re-read the tower snapshot, act within your current authority, then return to wait_for_tower_event.`
+      : `${label} Continue with wait_for_tower_event.`);
   return {
     eventKind: receipt.action,
     priority: actionRequired ? ("attention" as const) : ("routine" as const),
     cursor: cursor + 1,
     stateVersion: receipt.stateVersionAfter,
     simulationTime: receipt.simulationTimeMs,
-    summary: `${receipt.action.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase())}.`,
+    summary,
     actionRequired,
   };
 }
+
+// Events the Tower Agent should simply keep monitoring through: routine
+// traffic bookkeeping, and human-side steps (an authority request awaiting
+// the human's own confirmation, plan edits during review) that need nothing
+// from the agent until a later event says so.
+const NO_AGENT_ACTION_EVENTS = new Set<OperationalReceipt["action"]>([
+  "aircraft-state-transition",
+  "runway-resources-transition",
+  "pilot-readback-received",
+  "operating-posture-increase-requested",
+  "operating-posture-increase-confirmed",
+  "clearance-plan-member-selection-updated",
+  "clearance-plan-alternative-selected",
+  "clearance-plan-tactical-instruction-edited",
+]);
 
 const OBSERVE_CAPABILITIES: Capability[] = [
   "get_tower_snapshot",
@@ -1226,7 +1246,10 @@ const WAKE_SPACING_AFTER_MS = {
   heavy: 20_000,
 } as const;
 
-const PLAN_EXPIRY_WINDOW_MS = 30_000;
+// Plan Expiry is fixed in wall-clock terms so the Supervising Controller gets
+// the same review window at every pace; the simulation-time window is derived
+// from it per application instance.
+const PLAN_EXPIRY_WALL_CLOCK_MS = 45_000;
 
 function createSeededRandom(scenarioSeed: string) {
   let state = 2_166_136_261;
@@ -1717,27 +1740,38 @@ function advanceRunwayResources(state: ApplicationState) {
 }
 
 function expireStagedPlans(state: ApplicationState) {
-  const expired: Array<
-    Extract<
+  const expired: Array<{
+    action: Extract<
       OperationalReceipt["action"],
       "clearance-plan-expired" | "recovery-plan-expired"
-    >
-  > = [];
+    >;
+    summary: string;
+  }> = [];
+  const expirySummary = (kind: string, reference: string) =>
+    `${kind} ${reference} expired before the Supervising Controller acted on it. Recalculate from the current snapshot and stage a fresh plan if it is still needed.`;
   if (
     state.stagedClearancePlan &&
     state.stagedClearancePlan.expiresAtSimulationTimeMs <=
       state.simulationTimeMs
   ) {
+    const reference = state.stagedClearancePlan.reference;
     delete state.stagedClearancePlan;
     delete state.stagedClearancePlanReference;
-    expired.push("clearance-plan-expired");
+    expired.push({
+      action: "clearance-plan-expired",
+      summary: expirySummary("Clearance Plan", reference),
+    });
   }
   if (
     state.stagedRecoveryPlan &&
     state.stagedRecoveryPlan.expiresAtSimulationTimeMs <= state.simulationTimeMs
   ) {
+    const reference = state.stagedRecoveryPlan.reference;
     delete state.stagedRecoveryPlan;
-    expired.push("recovery-plan-expired");
+    expired.push({
+      action: "recovery-plan-expired",
+      summary: expirySummary("Recovery Plan", reference),
+    });
   }
   return expired;
 }
@@ -3055,6 +3089,8 @@ export function createFlowControlApplication(options: {
     },
     ...initialState
   } = options;
+  const planExpiryWindowMs =
+    PLAN_EXPIRY_WALL_CLOCK_MS * simulation.paceMultiplier;
   const scenario = generateScenario(initialState.scenarioSeed);
   const state: ApplicationState = {
     ...initialState,
@@ -3477,7 +3513,7 @@ export function createFlowControlApplication(options: {
                 : {}),
             });
           }
-          for (const action of expireStagedPlans(state)) {
+          for (const { action, summary } of expireStagedPlans(state)) {
             const stateVersionBefore = state.stateVersion;
             state.stateVersion += 1;
             state.operationalReceipts.push({
@@ -3486,6 +3522,7 @@ export function createFlowControlApplication(options: {
               simulationTimeMs: state.simulationTimeMs,
               stateVersionBefore,
               stateVersionAfter: state.stateVersion,
+              summary,
             });
           }
           if (allDeckEventsResolved(state) && stableFlowNow(state)) {
@@ -3508,7 +3545,7 @@ export function createFlowControlApplication(options: {
                   stateVersionAfter: state.stateVersion,
                   summary:
                     action === "stable-flow-restored"
-                      ? "Stable Flow restored after all required events were resolved."
+                      ? "Stable Flow restored after all required events were resolved; the Shift is complete. Read the final tower snapshot, summarise the Shift for the Supervising Controller, and end the task."
                       : "The Shift is complete; review the Shift Scorecard and audit export.",
                 });
               }
@@ -3888,7 +3925,7 @@ export function createFlowControlApplication(options: {
           classification: evaluation.classification,
           evaluatedStateVersion: state.stateVersion,
           expiresAtSimulationTimeMs:
-            state.simulationTimeMs + PLAN_EXPIRY_WINDOW_MS,
+            state.simulationTimeMs + planExpiryWindowMs,
         };
         const stateVersionBefore = state.stateVersion;
         state.stateVersion += 1;
@@ -4274,6 +4311,7 @@ export function createFlowControlApplication(options: {
           simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
+          summary: `The Supervising Controller dispatched Clearance Plan ${plan.reference}. Re-read the tower snapshot and keep monitoring for the pilot readbacks.`,
         });
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -4383,6 +4421,7 @@ export function createFlowControlApplication(options: {
           simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
+          summary: `The Supervising Controller approved and dispatched Recovery Plan ${plan.reference}. Re-read the tower snapshot and keep monitoring for the pilot readbacks.`,
         });
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -4429,7 +4468,7 @@ export function createFlowControlApplication(options: {
             status: "refusal" as const,
             stateVersion: state.stateVersion,
             summary:
-              "Recovery Plan staging requires an Exceptional Recovery clearance set.",
+              "Recovery Plan staging requires an Exceptional Recovery clearance set: more than one runway Clearance while a protective go-around or cancellation is included or a deck event is disrupting traffic. A single go-around, or a single Clearance for the emergency aircraft, classifies as Elevated; stage it with stage_clearance_plan instead so the Supervising Controller can review it.",
             nextAction: "stage-clearance-plan" as const,
           };
         }
@@ -4446,7 +4485,7 @@ export function createFlowControlApplication(options: {
           classification: evaluation.classification,
           evaluatedStateVersion: state.stateVersion,
           expiresAtSimulationTimeMs:
-            state.simulationTimeMs + PLAN_EXPIRY_WINDOW_MS,
+            state.simulationTimeMs + planExpiryWindowMs,
         };
         const stateVersionBefore = state.stateVersion;
         state.stateVersion += 1;
@@ -4491,6 +4530,7 @@ export function createFlowControlApplication(options: {
           simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
+          summary: `Authority reduced to ${POSTURE_LABELS[command.operatingPosture]}. Tools outside this posture were revoked and your previously fetched tool handles may fail: re-list this site's tools, then continue monitoring with wait_for_tower_event. Do not end the task.`,
         });
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -4527,6 +4567,7 @@ export function createFlowControlApplication(options: {
           simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
+          summary: `The Supervising Controller requested ${POSTURE_LABELS[command.operatingPosture]}. Nothing is needed from you: they confirm it in the page, and you will receive capability-synchronization-completed when it takes effect. Keep calling wait_for_tower_event.`,
         });
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -4551,6 +4592,7 @@ export function createFlowControlApplication(options: {
           simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
+          summary: `${pendingLabel} confirmed by the Supervising Controller; capabilities are synchronizing. Keep calling wait_for_tower_event until capability-synchronization-completed arrives.`,
         });
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -4577,6 +4619,7 @@ export function createFlowControlApplication(options: {
           simulationTimeMs: state.simulationTimeMs,
           stateVersionBefore,
           stateVersionAfter: state.stateVersion,
+          summary: `Authority is now ${grantedLabel}. Your tool list changed: re-list this site's tools before your next call, read the tower snapshot, then continue with wait_for_tower_event.`,
         });
         const snapshot = towerSnapshot();
         subscribers.forEach((subscriber) => subscriber(snapshot));
@@ -4769,7 +4812,10 @@ export function createFlowControlApplication(options: {
               cursor: query.cursor,
               stateVersion: state.stateVersion,
               simulationTime: 0,
-              summary: "Monitoring is unavailable until the Shift is active.",
+              summary:
+                state.shiftStatus === "armed"
+                  ? "Monitoring is unavailable until the Shift is active."
+                  : "The Shift has ended; monitoring is over. Read the final tower snapshot, summarise the Shift for the Supervising Controller, and end the task.",
               actionRequired: true,
             });
           }

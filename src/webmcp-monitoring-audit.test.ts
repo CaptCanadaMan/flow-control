@@ -143,7 +143,8 @@ it("wakes a cursor wait on the next operational event and then returns a bounded
     cursor: 1,
     stateVersion: 2,
     simulationTime: 0,
-    summary: "Category override updated.",
+    summary:
+      "Category override updated. Re-read the tower snapshot, act within your current authority, then return to wait_for_tower_event.",
     actionRequired: true,
   });
   expect(
@@ -190,7 +191,8 @@ it("returns a pending event immediately through the compact WebMCP wait envelope
     stateVersion: 2,
     simulationTimeMs: 0,
     affectedAircraft: [],
-    summary: "Category override updated.",
+    summary:
+      "Category override updated. Re-read the tower snapshot, act within your current authority, then return to wait_for_tower_event.",
     nextAction: "wait_for_tower_event",
     data: {
       eventKind: "category-override-updated",

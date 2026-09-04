@@ -252,7 +252,7 @@ export const WEBMCP_TOOL_CONTRACTS = {
           type: "integer",
           minimum: 1,
           description:
-            "Maximum wall-clock wait before returning a routine heartbeat.",
+            "Maximum wall-clock wait before returning a routine heartbeat. Use 1000; values above 2000 are clamped to 2000 because the host limits per-call execution time.",
         },
       },
       ["cursor", "heartbeatAfterMs"],
@@ -307,7 +307,7 @@ export const WEBMCP_TOOL_CONTRACTS = {
   },
   stage_recovery_plan: {
     description:
-      "Stage an Exceptional Recovery Plan for explicit Supervising Controller approval without dispatching it. Requires Assist or Take the Sector, the current State Version, and a clearance set classified as Exceptional Recovery.",
+      "Stage an Exceptional Recovery Plan for explicit Supervising Controller approval without dispatching it. Requires Assist or Take the Sector, the current State Version, and a clearance set classified as Exceptional Recovery: more than one runway Clearance while a protective go-around or cancellation is included or a deck event is disrupting traffic. A single go-around, or a single Clearance for the emergency aircraft, classifies as Elevated rather than Exceptional Recovery; stage those with stage_clearance_plan.",
     inputSchema: strictObjectSchema(
       {
         planReference: { type: "string", minLength: 1 },

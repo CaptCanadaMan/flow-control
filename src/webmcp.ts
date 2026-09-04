@@ -86,6 +86,12 @@ function executionSignal(
     : undefined;
 }
 
+// The supported host kills a tool call that outlives its per-call execution
+// window (measured: 20 s failed, 2.5 s was marginal, 1 s reliable). A longer
+// heartbeat would fail on the host side while the page-side wait kept
+// reporting the agent as healthy, so the wait clamps whatever it is asked for.
+export const MAX_HEARTBEAT_MS = 2_000;
+
 const RESULT_STATUSES = new Set<WebMcpResultStatus>([
   "success",
   "refusal",
@@ -203,6 +209,9 @@ export async function connectWebMcp({
   let registeredCapabilities: string[] = [];
   let capabilityKey = "";
   let pendingSynchronization = Promise.resolve();
+  // Set when a host registration failed part-way: the next synchronization
+  // then rebuilds the whole surface instead of trusting the recorded key.
+  let resyncRequired = false;
 
   async function registerCapabilities(
     capabilities: string[],
@@ -289,13 +298,18 @@ export async function connectWebMcp({
     }) as string[];
     const nextCapabilityKey = capabilities.join("|");
 
-    if (nextCapabilityKey === capabilityKey) {
+    if (!resyncRequired && nextCapabilityKey === capabilityKey) {
+      // A confirmed grant that changes no tool names still has to complete,
+      // or the page would sit on "Synchronizing capabilities" forever.
+      completePendingGrant();
       return;
     }
 
-    const isExpansion = registeredCapabilities.every((capability) =>
-      capabilities.includes(capability),
-    );
+    const isExpansion =
+      !resyncRequired &&
+      registeredCapabilities.every((capability) =>
+        capabilities.includes(capability),
+      );
 
     if (isExpansion) {
       const addedCapabilities = capabilities.filter(
@@ -306,18 +320,7 @@ export async function connectWebMcp({
       await registerCapabilities(addedCapabilities, grantLifecycle);
       registeredCapabilities = capabilities;
       capabilityKey = nextCapabilityKey;
-
-      const snapshot = application.query({ type: "tower-snapshot" });
-      if (
-        "capabilitySynchronization" in snapshot &&
-        snapshot.capabilitySynchronization === "pending"
-      ) {
-        application.command({
-          type: "complete-capability-synchronization",
-          actor: "capability-registry",
-          expectedStateVersion: snapshot.stateVersion,
-        });
-      }
+      completePendingGrant();
       return;
     }
 
@@ -326,6 +329,22 @@ export async function connectWebMcp({
     await registerCapabilities(capabilities, lifecycles[0]);
     registeredCapabilities = capabilities;
     capabilityKey = nextCapabilityKey;
+    resyncRequired = false;
+    completePendingGrant();
+  }
+
+  function completePendingGrant() {
+    const snapshot = application.query({ type: "tower-snapshot" });
+    if (
+      "capabilitySynchronization" in snapshot &&
+      snapshot.capabilitySynchronization === "pending"
+    ) {
+      application.command({
+        type: "complete-capability-synchronization",
+        actor: "capability-registry",
+        expectedStateVersion: snapshot.stateVersion,
+      });
+    }
   }
 
   function renewAgentLease() {
@@ -405,19 +424,23 @@ export async function connectWebMcp({
           const waiting = application.query({
             type: "wait-for-tower-event",
             cursor,
-            heartbeatAfterMs,
+            heartbeatAfterMs: Math.min(heartbeatAfterMs, MAX_HEARTBEAT_MS),
             signal: executionSignal(context),
           });
           return Promise.resolve(waiting)
-            .then((event) =>
-              resultEnvelope({
+            .then((event) => {
+              const outcome = recordOutcome(event);
+              return resultEnvelope({
                 application,
-                outcome: recordOutcome(event),
+                outcome,
                 summary: "Tower event wait completed.",
-                nextAction: "wait_for_tower_event",
+                nextAction:
+                  outcome?.eventKind === "monitoring-unavailable"
+                    ? "get_tower_snapshot"
+                    : "wait_for_tower_event",
                 data: event,
-              }),
-            )
+              });
+            })
             .finally(() => {
               application.command({
                 type: "set-agent-wait",
@@ -689,9 +712,18 @@ export async function connectWebMcp({
 
   await registerCurrentCapabilities();
   const unsubscribe = application.subscribe(() => {
-    pendingSynchronization = pendingSynchronization.then(
-      synchronizeCapabilities,
-    );
+    // A rejected registration must not poison the chain: every later posture
+    // change would otherwise be skipped silently, and begin_tower_shift
+    // (which awaits the chain) would throw to the host.
+    pendingSynchronization = pendingSynchronization
+      .then(synchronizeCapabilities)
+      .catch((error: unknown) => {
+        console.error(
+          "Flow Control could not synchronize its WebMCP capabilities; it will rebuild them on the next state change.",
+          error,
+        );
+        resyncRequired = true;
+      });
   });
 
   return {

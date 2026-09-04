@@ -2356,7 +2356,7 @@ describe("Shift lifecycle", () => {
         ],
         classification: "routine",
         evaluatedStateVersion: 1,
-        expiresAtSimulationTimeMs: 30_000,
+        expiresAtSimulationTimeMs: 45_000,
       },
     });
   });
@@ -2409,7 +2409,7 @@ describe("Shift lifecycle", () => {
         reference: "go-around-recovery",
         classification: "exceptional-recovery",
         evaluatedStateVersion: 1,
-        expiresAtSimulationTimeMs: 30_000,
+        expiresAtSimulationTimeMs: 45_000,
       },
       transmissions: [],
     });
@@ -2510,7 +2510,7 @@ describe("Shift lifecycle", () => {
     application.command({
       type: "advance-simulation",
       actor: "simulation-clock",
-      steps: 300,
+      steps: 450,
     });
 
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
@@ -2521,7 +2521,9 @@ describe("Shift lifecycle", () => {
       expect.objectContaining({
         actor: "simulation-clock",
         action: "clearance-plan-expired",
-        simulationTimeMs: 30_000,
+        simulationTimeMs: 45_000,
+        summary:
+          "Clearance Plan short-lived-departure expired before the Supervising Controller acted on it. Recalculate from the current snapshot and stage a fresh plan if it is still needed.",
       }),
     );
   });

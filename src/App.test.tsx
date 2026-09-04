@@ -176,7 +176,7 @@ describe("WebMCP preflight", () => {
     expect(page).toContain("Routine");
     expect(page).toContain("FLOW 101 · cleared for takeoff runway 09");
     expect(page).toContain("FLOW 202 · Tactical Instruction");
-    expect(page).toContain("Expires at 00:30");
+    expect(page).toContain("Expires at 00:45");
   });
 
   it("offers an explicit approval action only for a staged Recovery Plan", () => {

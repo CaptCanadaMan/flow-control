@@ -139,7 +139,7 @@ it("stages a reversible Clearance Plan with strict mixed-member and alternative 
     stateVersion: 2,
     simulationTimeMs: 0,
     affectedAircraft: ["fc-101", "fc-202"],
-    expiresAtSimulationTimeMs: 30_000,
+    expiresAtSimulationTimeMs: 45_000,
     nextAction: "await-plan-review",
     data: {
       reference: "departure-and-vector",
@@ -247,7 +247,7 @@ it("stages an Exceptional Recovery Plan through its distinct approval boundary",
     status: "approval-required",
     stateVersion: 2,
     affectedAircraft: ["fc-202", "fc-404"],
-    expiresAtSimulationTimeMs: 30_000,
+    expiresAtSimulationTimeMs: 45_000,
     nextAction: "review-recovery-plan",
     data: {
       reference: "go-around-recovery",

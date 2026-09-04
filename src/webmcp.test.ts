@@ -1068,4 +1068,161 @@ describe("WebMCP capability lifecycle", () => {
     });
     expect(application.query({ type: "tower-snapshot" })).toEqual(before);
   });
+
+  it("keeps synchronizing after a host registration rejects once", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const registeredTools: Array<{
+      name: string;
+      execute: (input: unknown) => unknown;
+      signal: AbortSignal;
+    }> = [];
+    let rejectNextRegistration = false;
+    const modelContext = {
+      async registerTool(
+        tool: { name: string; execute: (input: unknown) => unknown },
+        options: { signal: AbortSignal },
+      ) {
+        if (rejectNextRegistration) {
+          rejectNextRegistration = false;
+          throw new Error(
+            "InvalidStateError: a tool with this name is already registered.",
+          );
+        }
+        registeredTools.push({ ...tool, signal: options.signal });
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "take-the-sector",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools[0].execute({ expectedStateVersion: 0 });
+    expect(registeredTools.filter(({ signal }) => !signal.aborted)).toHaveLength(9);
+
+    // The host rejects one of the re-registrations during the reduction.
+    rejectNextRegistration = true;
+    application.command({
+      type: "reduce-operating-posture",
+      actor: "supervising-controller",
+      operatingPosture: "assist",
+      expectedStateVersion: 1,
+    });
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    });
+
+    // The next authority change still synchronizes: the surface is rebuilt
+    // from scratch rather than left poisoned.
+    application.command({
+      type: "reduce-operating-posture",
+      actor: "supervising-controller",
+      operatingPosture: "observe",
+      expectedStateVersion: 2,
+    });
+    await vi.waitFor(() => {
+      expect(
+        registeredTools
+          .filter(({ signal }) => !signal.aborted)
+          .map(({ name }) => name),
+      ).toEqual([
+        "get_tower_snapshot",
+        "wait_for_tower_event",
+        "get_selected_context",
+        "get_active_conflicts",
+        "evaluate_clearance_set",
+      ]);
+    });
+    consoleError.mockRestore();
+  });
+
+  it("completes a confirmed grant even when it adds no tools", async () => {
+    const registeredTools: Array<{
+      name: string;
+      execute: (input: unknown) => unknown;
+      signal: AbortSignal;
+    }> = [];
+    const modelContext = {
+      async registerTool(
+        tool: { name: string; execute: (input: unknown) => unknown },
+        options: { signal: AbortSignal },
+      ) {
+        registeredTools.push({ ...tool, signal: options.signal });
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "assist",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools[0].execute({ expectedStateVersion: 0 });
+    for (const [category, expectedStateVersion] of [
+      ["runway-clearance", 1],
+      ["tactical-instruction", 2],
+    ] as const) {
+      application.command({
+        type: "set-category-override",
+        actor: "supervising-controller",
+        category,
+        disposition: "withheld",
+        expectedStateVersion,
+      });
+    }
+    application.command({
+      type: "request-operating-posture-increase",
+      actor: "supervising-controller",
+      operatingPosture: "take-the-sector",
+      expectedStateVersion: 3,
+    });
+    application.command({
+      type: "confirm-operating-posture-increase",
+      actor: "supervising-controller",
+      expectedStateVersion: 4,
+    });
+
+    // Both issue tools are withheld, so Take the Sector exposes exactly the
+    // Assist set; the grant must still take effect.
+    await vi.waitFor(() => {
+      expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+        operatingPosture: "take-the-sector",
+        capabilitySynchronization: undefined,
+        pendingOperatingPosture: undefined,
+      });
+    });
+    expect(registeredTools.filter(({ signal }) => !signal.aborted)).toHaveLength(7);
+  });
+
+  it("clamps heartbeatAfterMs to the host's per-call execution window", async () => {
+    vi.useFakeTimers();
+    const registeredTools = new Map<
+      string,
+      { execute: (input: unknown) => unknown; signal: AbortSignal }
+    >();
+    const modelContext = {
+      async registerTool(
+        tool: { name: string; execute: (input: unknown) => unknown },
+        options: { signal: AbortSignal },
+      ) {
+        registeredTools.set(tool.name, { ...tool, signal: options.signal });
+      },
+    };
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-0",
+      operatingPosture: "observe",
+    });
+    await connectWebMcp({ application, modelContext });
+    await registeredTools
+      .get("begin_tower_shift")
+      ?.execute({ expectedStateVersion: 0 });
+
+    const waiting = registeredTools
+      .get("wait_for_tower_event")
+      ?.execute({ cursor: 21, heartbeatAfterMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(waiting).resolves.toMatchObject({
+      data: { eventKind: "heartbeat", cursor: 21, actionRequired: false },
+    });
+  });
 });
