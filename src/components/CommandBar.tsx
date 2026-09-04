@@ -168,8 +168,13 @@ export function CommandBar({
     if (isRunwayVerb(next)) {
       setInstruction({});
       setVerb(verb === next ? undefined : next);
-      if (verb !== next && !runwayEnd && selectedAircraft?.activeRunwayClearance) {
-        setRunwayEnd(selectedAircraft.activeRunwayClearance.runwayEnd);
+      // Preselect the runway end the aircraft is actually set up for (or the
+      // one it already holds a clearance on); the other ends stay one tap away.
+      const presetEnd =
+        selectedAircraft?.activeRunwayClearance?.runwayEnd ??
+        selectedAircraft?.assignedRunway?.runwayEnd;
+      if (verb !== next && !runwayEnd && presetEnd) {
+        setRunwayEnd(presetEnd);
       }
       return;
     }

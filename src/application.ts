@@ -320,6 +320,12 @@ type Aircraft = {
   activeRunwayClearance?: RunwayClearance;
   activeTacticalInstruction?: TacticalInstruction;
   exit?: "departed" | "landed";
+  // The runway and end this aircraft is set up to use, published on the
+  // snapshot so a clearance never has to be guessed from geometry.
+  assignedRunway?: {
+    runwayId: "09-27" | "04-22";
+    runwayEnd: "09" | "27" | "04" | "22";
+  };
 };
 
 type Transmission = {
@@ -544,6 +550,15 @@ type OccupancyRecord = {
   beganAtSimulationTimeMs: number;
   clearsAtSimulationTimeMs: number;
 };
+
+const RUNWAY_BOUND_CLEARANCE_KINDS: ReadonlySet<RunwayClearanceKind> =
+  new Set<RunwayClearanceKind>([
+    "hold-short",
+    "line-up-and-wait",
+    "clear-for-takeoff",
+    "clear-to-land",
+    "clear-touch-and-go",
+  ]);
 
 const FEET_PER_NAUTICAL_MILE = 6_076.12;
 const FINAL_APPROACH_FIX_DISTANCE_NM = 4;
@@ -1789,6 +1804,15 @@ function evaluateRunwayClearanceSet(
     followerAircraftId: string;
     requiredSpacingMs: number;
     availableSpacingMs: number;
+  } | {
+    kind: "runway-assignment";
+    aircraftId: string;
+    resourceId: string;
+    requestedRunwayEnd: "09" | "27" | "04" | "22";
+    assignedRunway: {
+      runwayId: "09-27" | "04-22";
+      runwayEnd: "09" | "27" | "04" | "22";
+    };
   }> = [];
   const mustIssueBy: number[] = [];
   const projectedResources = runwayResourcesAt(
@@ -1800,6 +1824,32 @@ function evaluateRunwayClearanceSet(
     const aircraft = state.aircraft.find(
       ({ id }) => id === candidate.aircraftId,
     );
+    // A runway-bound clearance for a runway the aircraft is not set up to use
+    // would be read back and then silently not flown (the landing gate and the
+    // departure roll both work from the assignment), so refuse it here with
+    // the assignment named. Go-around and cancel are not runway-bound.
+    const progress = state.aircraftProgress[candidate.aircraftId];
+    // Holding short is end-agnostic (both ends are the same runway); every
+    // other runway-bound clearance also has a direction.
+    const endMatters = candidate.clearance.kind !== "hold-short";
+    if (
+      aircraft &&
+      progress &&
+      RUNWAY_BOUND_CLEARANCE_KINDS.has(candidate.clearance.kind) &&
+      (candidate.clearance.runwayId !== progress.runwayId ||
+        (endMatters && candidate.clearance.runwayEnd !== progress.runwayEnd))
+    ) {
+      constraints.push({
+        kind: "runway-assignment",
+        aircraftId: aircraft.id,
+        resourceId: candidate.clearance.runwayId,
+        requestedRunwayEnd: candidate.clearance.runwayEnd,
+        assignedRunway: {
+          runwayId: progress.runwayId,
+          runwayEnd: progress.runwayEnd,
+        },
+      });
+    }
     const capabilityProfile = state.aircraftCapabilityProfiles.find(
       ({ id }) => id === aircraft?.capabilityProfileId,
     );
@@ -1902,9 +1952,9 @@ function evaluateRunwayClearanceSet(
     ...new Set([
       ...conflicts.flatMap(({ aircraftIds }) => aircraftIds),
       ...constraints.flatMap((constraint) =>
-        constraint.kind === "runway-capability"
-          ? [constraint.aircraftId]
-          : [constraint.leaderAircraftId, constraint.followerAircraftId],
+        constraint.kind === "wake-separation"
+          ? [constraint.leaderAircraftId, constraint.followerAircraftId]
+          : [constraint.aircraftId],
       ),
     ]),
   ];
@@ -3028,7 +3078,20 @@ export function createFlowControlApplication(options: {
       weather: { ...state.weather },
       airport: structuredClone(state.airport),
       aircraftCapabilityProfiles: structuredClone(state.aircraftCapabilityProfiles),
-      aircraft: structuredClone(state.aircraft),
+      aircraft: state.aircraft.map((aircraft) => {
+        const progress = state.aircraftProgress[aircraft.id];
+        return {
+          ...structuredClone(aircraft),
+          ...(progress
+            ? {
+                assignedRunway: {
+                  runwayId: progress.runwayId,
+                  runwayEnd: progress.runwayEnd,
+                },
+              }
+            : {}),
+        };
+      }),
       runwayResources: structuredClone(state.runwayResources),
       transmissions: structuredClone(state.transmissions),
       operatingPosture: state.operatingPosture,
@@ -3565,9 +3628,12 @@ export function createFlowControlApplication(options: {
             status: "refusal" as const,
             stateVersion: state.stateVersion,
             summary: "Runway Clearance refused by policy.",
-            rationale: constraint
-              ? `Runway ${constraint.resourceId} cannot satisfy ${aircraft.callsign} minimum runway capability.`
-              : `Runway resource ${conflict.resourceId} is occupied.`,
+            rationale:
+              constraint?.kind === "runway-assignment"
+                ? `${aircraft.callsign} is set up for runway ${constraint.assignedRunway.runwayEnd} (${constraint.assignedRunway.runwayId}); a ${command.clearance.kind} clearance for runway ${constraint.requestedRunwayEnd} would be read back but not flown. Reissue it for runway ${constraint.assignedRunway.runwayEnd}.`
+                : constraint
+                  ? `Runway ${constraint.resourceId} cannot satisfy ${aircraft.callsign} minimum runway capability.`
+                  : `Runway resource ${conflict.resourceId} is occupied.`,
             nextAction: evaluation.nextAction,
           };
         }

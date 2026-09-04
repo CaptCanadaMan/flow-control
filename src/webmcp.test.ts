@@ -1050,6 +1050,13 @@ describe("WebMCP capability lifecycle", () => {
         conflicts: [],
         constraints: [
           {
+            kind: "runway-assignment",
+            aircraftId: "fc-505",
+            resourceId: "04-22",
+            requestedRunwayEnd: "22",
+            assignedRunway: { runwayId: "09-27", runwayEnd: "27" },
+          },
+          {
             kind: "runway-capability",
             aircraftId: "fc-505",
             resourceId: "04-22",

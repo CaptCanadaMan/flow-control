@@ -488,6 +488,7 @@ export function Radar({
                 </p>
                 <p className="radar-card-data">
                   {selectedAircraft.altitudeFeet.toLocaleString()} ft · {Math.round(selectedAircraft.speedKnots)} kt · hdg {String(Math.round(selectedAircraft.headingDegrees) % 360).padStart(3, "0")}°
+                  {selectedAircraft.assignedRunway ? ` · rwy ${selectedAircraft.assignedRunway.runwayEnd}` : ""}
                 </p>
                 <p className="radar-card-line">
                   {clearance

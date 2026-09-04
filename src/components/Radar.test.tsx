@@ -87,7 +87,7 @@ describe("Radar", () => {
 
     expect(page).toContain('aria-label="Selected Aircraft FLOW 202"');
     expect(page).toContain("King Air 350");
-    expect(page).toContain("3,000 ft · 180 kt · hdg 090°");
+    expect(page).toContain("3,000 ft · 180 kt · hdg 090° · rwy 04");
     expect(page).toContain("No active runway Clearance");
   });
 

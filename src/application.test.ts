@@ -2009,6 +2009,13 @@ describe("Shift lifecycle", () => {
       conflicts: [],
       constraints: [
         {
+          kind: "runway-assignment",
+          aircraftId: "fc-505",
+          resourceId: "04-22",
+          requestedRunwayEnd: "22",
+          assignedRunway: { runwayId: "09-27", runwayEnd: "27" },
+        },
+        {
           kind: "runway-capability",
           aircraftId: "fc-505",
           resourceId: "04-22",
@@ -2018,6 +2025,64 @@ describe("Shift lifecycle", () => {
       ],
       nextAction: "select-suitable-runway",
     });
+  });
+
+  it("refuses a landing Clearance for a runway the arrival is not set up to use, naming the assignment", () => {
+    const application = createFlowControlApplication({
+      scenarioSeed: "phase-5-runway-assignment",
+      operatingPosture: "take-the-sector",
+    });
+    application.command({
+      type: "begin-shift",
+      actor: "tower-agent",
+      expectedStateVersion: 0,
+    });
+    // FLOW 303 is set up for runway 22; 09-27 is long enough for it, so only
+    // the assignment stands between the clearance and a silent go-around.
+    expect(
+      (application.query({ type: "tower-snapshot" }) as TowerSnapshot).aircraft.find(
+        ({ id }) => id === "fc-303",
+      )?.assignedRunway,
+    ).toEqual({ runwayId: "04-22", runwayEnd: "22" });
+
+    const result = application.command({
+      type: "issue-runway-clearance",
+      actor: "tower-agent",
+      aircraftId: "fc-303",
+      clearance: { kind: "clear-to-land", runwayId: "09-27", runwayEnd: "09" },
+      expectedStateVersion: 1,
+    });
+
+    expect(result).toEqual({
+      status: "refusal",
+      stateVersion: 1,
+      summary: "Runway Clearance refused by policy.",
+      rationale:
+        "FLOW 303 is set up for runway 22 (04-22); a clear-to-land clearance for runway 09 would be read back but not flown. Reissue it for runway 22.",
+      nextAction: "select-suitable-runway",
+    });
+    expect(application.query({ type: "tower-snapshot" })).toMatchObject({
+      stateVersion: 1,
+      transmissions: [],
+    });
+
+    // Holding short is end-agnostic, so either end of the assigned runway is
+    // accepted for a departure.
+    expect(
+      issueManualRunwayClearance(application, "fc-404", {
+        kind: "hold-short",
+        runwayId: "09-27",
+        runwayEnd: "09",
+      }),
+    ).toMatchObject({ status: "success" });
+    // The right runway for FLOW 303 is accepted.
+    expect(
+      issueManualRunwayClearance(application, "fc-303", {
+        kind: "clear-to-land",
+        runwayId: "04-22",
+        runwayEnd: "22",
+      }),
+    ).toMatchObject({ status: "success" });
   });
 
   it("predicts a runway-separation conflict between two issued Clearances demanding the same runway window", () => {
@@ -3038,7 +3103,7 @@ describe("Shift lifecycle", () => {
       stateVersion: 1,
       summary: "Runway Clearance refused by policy.",
       rationale:
-        "Runway 04-22 cannot satisfy FLOW 505 minimum runway capability.",
+        "FLOW 505 is set up for runway 27 (09-27); a clear-to-land clearance for runway 22 would be read back but not flown. Reissue it for runway 27.",
       nextAction: "select-suitable-runway",
     });
     expect(application.query({ type: "tower-snapshot" })).toMatchObject({
